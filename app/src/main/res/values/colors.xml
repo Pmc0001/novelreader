@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <color name="colorPrimary">#FF6B4E3D</color>
+    <color name="colorPrimaryDark">#FF5A3E2E</color>
+    <color name="colorAccent">#FFC9A96E</color>
+
+    <color name="textPrimary">#FF2D2016</color>
+    <color name="textSecondary">#FF8C7A6B</color>
+    <color name="textOnPrimary">#FFFFFFFF</color>
+
+    <color name="divider">#FFE8DDD0</color>
+    <color name="error">#FFD32F2F</color>
+
+    <color name="bgPage">#FFFAF6F1</color>
+    <color name="bgCard">#FFFFFFFF</color>
+    <color name="bgCardElevated">#FFFFFFFF</color>
+
+    <color name="bgWhite">#FFFFFFFF</color>
+    <color name="bgWarmYellow">#FFF5E6C8</color>
+    <color name="bgCream">#FFF0E4D0</color>
+    <color name="bgGreen">#FFCCE8CF</color>
+    <color name="bgBlue">#FFD6E4F0</color>
+    <color name="bgDark">#FF1A1A2E</color>
+
+    <color name="topBarOverlay">#CC2D2016</color>
+    <color name="bottomBarOverlay">#CC2D2016</color>
+    <color name="overlayDim">#662D2016</color>
+</resources>

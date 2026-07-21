@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Background circle -->
+    <path
+        android:fillColor="#6B4E3D"
+        android:pathData="M54,54m-50,0a50,50 0,1 1,100 0a50,50 0,1 1,-100 0" />
+
+    <!-- Book spine shadow -->
+    <path
+        android:fillColor="#5A3E2E"
+        android:pathData="M54,28 L54,80 C54,80 54,80 54,80 L56,80 L56,28 Z" />
+
+    <!-- Left page -->
+    <path
+        android:fillColor="#FFF6E9"
+        android:pathData="M54,30 C54,30 40,28 28,32 L28,74 C40,70 54,72 54,72 Z" />
+
+    <!-- Right page -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,30 C54,30 68,28 80,32 L80,74 C68,70 54,72 54,72 Z" />
+
+    <!-- Left page text lines -->
+    <path
+        android:fillColor="#D4C4B0"
+        android:pathData="M34,40 L50,38.5"
+        android:strokeWidth="1.2"
+        android:strokeColor="#D4C4B0" />
+    <path
+        android:fillColor="#D4C4B0"
+        android:pathData="M34,46 L48,44.8"
+        android:strokeWidth="1.2"
+        android:strokeColor="#D4C4B0" />
+    <path
+        android:fillColor="#D4C4B0"
+        android:pathData="M34,52 L50,50.5"
+        android:strokeWidth="1.2"
+        android:strokeColor="#D4C4B0" />
+    <path
+        android:fillColor="#D4C4B0"
+        android:pathData="M34,58 L46,56.8"
+        android:strokeWidth="1.2"
+        android:strokeColor="#D4C4B0" />
+    <path
+        android:fillColor="#D4C4B0"
+        android:pathData="M34,64 L50,62.5"
+        android:strokeWidth="1.2"
+        android:strokeColor="#D4C4B0" />
+
+    <!-- Right page text lines -->
+    <path
+        android:fillColor="#C9A96E"
+        android:pathData="M58,38.5 L74,40"
+        android:strokeWidth="1.2"
+        android:strokeColor="#C9A96E" />
+    <path
+        android:fillColor="#C9A96E"
+        android:pathData="M58,44.8 L72,46"
+        android:strokeWidth="1.2"
+        android:strokeColor="#C9A96E" />
+    <path
+        android:fillColor="#C9A96E"
+        android:pathData="M58,50.5 L74,52"
+        android:strokeWidth="1.2"
+        android:strokeColor="#C9A96E" />
+    <path
+        android:fillColor="#C9A96E"
+        android:pathData="M58,56.8 L70,58"
+        android:strokeWidth="1.2"
+        android:strokeColor="#C9A96E" />
+    <path
+        android:fillColor="#C9A96E"
+        android:pathData="M58,62.5 L74,64"
+        android:strokeWidth="1.2"
+        android:strokeColor="#C9A96E" />
+
+    <!-- Book cover edge left -->
+    <path
+        android:fillColor="#5A3E2E"
+        android:pathData="M26,31 C26,31 26,75 26,75 L28,74 L28,32 Z" />
+
+    <!-- Book cover edge right -->
+    <path
+        android:fillColor="#5A3E2E"
+        android:pathData="M80,32 L80,74 L82,75 C82,75 82,31 82,31 Z" />
+
+    <!-- Bookmark -->
+    <path
+        android:fillColor="#C9A96E"
+        android:pathData="M62,26 L62,42 L66,38 L70,42 L70,26 Z" />
+
+</vector>

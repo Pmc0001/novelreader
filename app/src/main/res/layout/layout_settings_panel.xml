@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/bg_bottom_sheet_refined"
+    android:padding="24dp">
+
+    <!-- Handle -->
+    <View
+        android:layout_width="40dp"
+        android:layout_height="4dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginBottom="20dp"
+        android:background="@drawable/bg_button_round" />
+
+    <!-- Title -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="阅读设置"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:textColor="@color/textOnPrimary"
+        android:layout_marginBottom="24dp" />
+
+    <!-- Font Size Section -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="字体大小"
+        android:textSize="13sp"
+        android:textColor="#99FFFFFF"
+        android:layout_marginBottom="10dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="24dp">
+
+        <TextView
+            android:id="@+id/btn_font_minus"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:text="A-"
+            android:textSize="16sp"
+            android:textColor="@color/colorAccent"
+            android:background="@drawable/bg_button_outline"
+            android:layout_marginEnd="16dp" />
+
+        <TextView
+            android:id="@+id/tv_font_size_value"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="18sp"
+            android:textSize="16sp"
+            android:textColor="@color/textOnPrimary" />
+
+        <TextView
+            android:id="@+id/btn_font_plus"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:text="A+"
+            android:textSize="18sp"
+            android:textColor="@color/colorAccent"
+            android:background="@drawable/bg_button_outline"
+            android:layout_marginStart="16dp" />
+    </LinearLayout>
+
+    <!-- Brightness Section -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="亮度"
+        android:textSize="13sp"
+        android:textColor="#99FFFFFF"
+        android:layout_marginBottom="10dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="低"
+            android:textSize="12sp"
+            android:textColor="#99FFFFFF"
+            android:layout_marginEnd="8dp" />
+
+        <SeekBar
+            android:id="@+id/seekbar_brightness"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:max="100"
+            android:progress="50"
+            android:progressTint="@color/colorAccent"
+            android:thumbTint="@color/colorAccent" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="高"
+            android:textSize="12sp"
+            android:textColor="#99FFFFFF"
+            android:layout_marginStart="8dp" />
+
+        <TextView
+            android:id="@+id/tv_brightness_value"
+            android:layout_width="40dp"
+            android:layout_height="wrap_content"
+            android:gravity="end"
+            android:text="自动"
+            android:textSize="12sp"
+            android:textColor="#99FFFFFF" />
+    </LinearLayout>
+
+    <!-- Background Theme Section -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="背景主题"
+        android:textSize="13sp"
+        android:textColor="#99FFFFFF"
+        android:layout_marginBottom="12dp" />
+
+    <LinearLayout
+        android:id="@+id/ll_background_selector"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:layout_marginBottom="8dp" />
+
+</LinearLayout>
