@@ -7,11 +7,13 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
 import android.view.animation.DecelerateInterpolator
+import android.widget.OverScroller
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -36,8 +38,15 @@ class ReadingView @JvmOverloads constructor(
         get() = totalPages
 
     companion object {
-        private const val PARAGRAPH_SPACING = 0.4f   // 段间距（行高倍数）
-        private const val FIRST_LINE_INDENT = 2f     // 段首缩进（字号倍数）
+        // 段间距（字号倍数）— 0.35 个字号 = 段间 17sp 左右，段/行比 ≈1.6；
+        // 参考微信读书/掌阅/Kindle/iBooks 的 1.2~1.4 略宽一档，给中文阅读留呼吸感。
+        // 关键约束：段间空隙必须 < 屏边距 (SCREEN_PADDING_V_DP)，否则"段比页边还抢眼"会切碎阅读节奏。
+        private const val PARAGRAPH_SPACING = 0.35f
+        // 段首缩进（字号倍数）— 2 字符缩进
+        private const val FIRST_LINE_INDENT = 2f
+        // 屏顶/屏底留白（dp）— 20dp 比段间距 17sp 略宽，给眼睛留呼吸缓冲；
+        // 太小贴近边沿发紧，太大翻页效率下降
+        private const val SCREEN_PADDING_V_DP = 20f
     }
 
     private val density: Float
@@ -71,11 +80,46 @@ class ReadingView @JvmOverloads constructor(
             invalidate()
         }
 
+    // 正文字体编号（对应 ReadingSettings.FONT_FAMILY_*）
+    var fontFamily: Int = ReadingSettings.FONT_FAMILY_DEFAULT
+        set(value) {
+            field = value
+            textPaint.typeface = ReadingSettings.resolveTypeface(value)
+            computeLayout()
+            invalidate()
+        }
+
     var onPageChanged: ((current: Int, total: Int) -> Unit)? = null
     var onTapCenter: (() -> Unit)? = null
     var onNextChapter: (() -> Unit)? = null
     var onPrevChapter: (() -> Unit)? = null
     var onChapterTransitionComplete: ((isNext: Boolean) -> Unit)? = null
+    // 滚动模式下上报阅读进度百分比（0~100）
+    var onScrollProgress: ((percent: Int) -> Unit)? = null
+
+    // 滚动阅读模式：true=连续滚动，false=翻页
+    var scrollMode: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            settleAnimator?.cancel()
+            isDragging = false
+            drawOffset = 0f
+            scrollY = 0f
+            pendingScrollPercent = -1f
+            computeLayout()
+            invalidate()
+        }
+
+    // 滚动模式状态
+    private var scrollY: Float = 0f            // 当前滚动偏移（向下为正）
+    private var maxScroll: Float = 0f          // 最大可滚动距离
+    private var scrollDragging = false
+    private var pendingScrollPercent = -1f     // >=0 时 computeLayout 后定位到该比例
+    private val overScroller = OverScroller(context)
+
+    val scrollPercent: Float
+        get() = if (maxScroll > 0f) (scrollY / maxScroll).coerceIn(0f, 1f) else 1f
 
     // 拖拽 / 翻页动画状态
     private var isDragging = false
@@ -123,6 +167,8 @@ class ReadingView @JvmOverloads constructor(
         currentPage = 0
         drawPageBase = 0
         drawOffset = 0f
+        scrollY = 0f
+        pendingScrollPercent = -1f
         settleAnimator?.cancel()
         isDragging = false
         transitionNextLines = emptyList()
@@ -132,6 +178,12 @@ class ReadingView @JvmOverloads constructor(
     }
 
     fun setPage(page: Int) {
+        if (scrollMode) {
+            // 滚动模式下跳到顶部（正向进入新章）
+            scrollY = 0f
+            invalidate()
+            return
+        }
         if (page in 0 until totalPages) {
             currentPage = page
             drawPageBase = page
@@ -142,6 +194,11 @@ class ReadingView @JvmOverloads constructor(
     }
 
     fun goToLastPage() {
+        if (scrollMode) {
+            scrollY = maxScroll
+            invalidate()
+            return
+        }
         if (totalPages > 0) {
             setPage(totalPages - 1)
         }
@@ -209,6 +266,17 @@ class ReadingView @JvmOverloads constructor(
         if (width > 0 && height > 0) computeLayout()
     }
 
+    // 滚动模式下按百分比定位（用于恢复阅读位置）
+    fun setInitialScrollPercent(p: Float) {
+        pendingScrollPercent = p.coerceIn(0f, 1f)
+        if (width > 0 && height > 0) {
+            scrollY = (maxScroll * pendingScrollPercent).coerceIn(0f, maxScroll)
+            pendingScrollPercent = -1f
+            invalidate()
+            reportScrollProgress()
+        }
+    }
+
     private fun computeLayout() {
         if (width <= 0 || height <= 0) return
 
@@ -227,10 +295,35 @@ class ReadingView @JvmOverloads constructor(
         }
 
         allLines = newLines
-        val paddingV = 8f * density
+
+        if (scrollMode) {
+            // 滚动模式：计算内容总高度与最大滚动距离
+            val paddingV = SCREEN_PADDING_V_DP * density
+            val paragraphGap = fontSize * density * PARAGRAPH_SPACING
+            // 第一行 baseline = paddingTop + paddingV + fontSize
+            var y = paddingTop + paddingV + fontSize * density
+            allLines.forEachIndexed { index, entry ->
+                if (entry.isParagraphStart && index > 0) y += paragraphGap
+                y += lineHeight
+            }
+            // 内容总高 = 最后一行 baseline + descent - 第一行 top + paddingV 底
+            val contentHeight = y - lineHeight + fontSize * density * 0.3f + paddingV + paddingBottom
+            maxScroll = maxOf(0f, contentHeight - height)
+            scrollY = scrollY.coerceIn(0f, maxScroll)
+            if (pendingScrollPercent >= 0f) {
+                scrollY = (maxScroll * pendingScrollPercent).coerceIn(0f, maxScroll)
+                pendingScrollPercent = -1f
+            }
+            totalPages = 1
+            reportScrollProgress()
+            return
+        }
+
+        val paddingV = SCREEN_PADDING_V_DP * density
         val paragraphGap = fontSize * density * PARAGRAPH_SPACING
-        val usableHeight =
-            height - paddingTop - paddingBottom - paddingV * 2f - paragraphGap
+        // 可用高度 = 总高 - 屏顶留白 - 屏底留白 - 最后一行 descent 缓冲
+        // 不然最后一行 baseline+descent 会延伸到 paddingBottom 区内，被栏/屏底切字
+        val usableHeight = height - paddingTop - paddingBottom - paddingV * 2f - lineHeight * 0.3f
         linesPerPage = maxOf(1, (usableHeight / lineHeight).toInt())
         totalPages = maxOf(1, (allLines.size + linesPerPage - 1) / linesPerPage)
 
@@ -245,6 +338,10 @@ class ReadingView @JvmOverloads constructor(
         if (drawPageBase >= totalPages) drawPageBase = totalPages - 1
 
         onPageChanged?.invoke(currentPage, totalPages)
+    }
+
+    private fun reportScrollProgress() {
+        onScrollProgress?.invoke((scrollPercent * 100).toInt())
     }
 
     private fun linesForPage(page: Int): List<LineEntry> {
@@ -305,7 +402,9 @@ class ReadingView @JvmOverloads constructor(
 
         val w = width.toFloat()
 
-        if (isDragging || settleAnimator?.isRunning == true) {
+        if (scrollMode) {
+            drawScroll(canvas)
+        } else if (isDragging || settleAnimator?.isRunning == true) {
             val baseLines = linesForPage(drawPageBase)
             if (drawOffset <= 0f) {
                 drawPageAt(canvas, baseLines, drawOffset)
@@ -331,6 +430,43 @@ class ReadingView @JvmOverloads constructor(
         drawTime(canvas)
     }
 
+    // 滚动模式：连续绘制可见行，并支持顶/底边界"拉出上一章/下一章"提示
+    private fun drawScroll(canvas: Canvas) {
+        val lineHeight = fontSize * lineSpacing * density
+        val paragraphGap = fontSize * density * PARAGRAPH_SPACING
+        val paddingH = 24f * density
+        val paddingV = SCREEN_PADDING_V_DP * density
+        val firstLineIndent = fontSize * density * FIRST_LINE_INDENT
+        val firstAscent = fontSize * density
+        val top = paddingTop + paddingV + firstAscent  // 第一行 baseline
+        val bottomLimit = height - paddingBottom
+
+        canvas.save()
+        canvas.translate(0f, -scrollY)
+        var y = top
+        allLines.forEachIndexed { index, entry ->
+            if (entry.isParagraphStart && index > 0) y += paragraphGap
+            val baseline = y
+            val lineTop = baseline - firstAscent
+            val lineBottom = lineTop + lineHeight
+            if (lineBottom > scrollY && lineTop < scrollY + height) {
+                val indent = if (entry.isParagraphStart) firstLineIndent else 0f
+                if (entry.text.isNotEmpty()) {
+                    canvas.drawText(entry.text, paddingH + indent, baseline, textPaint)
+                }
+            }
+            y += lineHeight
+        }
+        canvas.restore()
+
+        // 边界拉出提示（在主画布固定位置绘制）
+        if (scrollY < -4f) {
+            canvas.drawText("上滑看上一章", width / 2f, 40f * density, hintPaint)
+        } else if (scrollY > maxScroll + 4f) {
+            canvas.drawText("下滑看下一章", width / 2f, height - 24f * density, hintPaint)
+        }
+    }
+
     private fun drawTime(canvas: Canvas) {
         val time = timeFormat.format(Date())
         val paddingH = 16f * density
@@ -342,11 +478,12 @@ class ReadingView @JvmOverloads constructor(
         if (lines.isEmpty()) return
 
         val paddingH = 24f * density
-        val paddingV = 8f * density
+        val paddingV = SCREEN_PADDING_V_DP * density
         val lineHeight = fontSize * lineSpacing * density
         val paragraphGap = fontSize * density * PARAGRAPH_SPACING
         val firstLineIndent = fontSize * density * FIRST_LINE_INDENT
 
+        // 第一行 baseline = paddingTop + paddingV + fontSize（顶边距 16dp，眼睛舒服）
         var y = paddingTop + paddingV + fontSize * density
 
         canvas.save()
@@ -367,6 +504,7 @@ class ReadingView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (scrollMode) return handleScrollTouch(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 settleAnimator?.cancel()
@@ -434,6 +572,76 @@ class ReadingView @JvmOverloads constructor(
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    override fun computeScroll() {
+        if (scrollMode && overScroller.computeScrollOffset()) {
+            scrollY = overScroller.currY.toFloat().coerceIn(0f, maxScroll)
+            invalidate()
+            reportScrollProgress()
+        }
+    }
+
+    // 滚动模式的触摸处理：拖拽滚动 + fling 惯性 + 顶/底边界拉出翻章
+    private fun handleScrollTouch(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                overScroller.forceFinished(true)
+                scrollDragging = true
+                downY = event.y
+                lastTouchX = event.y
+                velocityTracker?.clear()
+                if (velocityTracker == null) velocityTracker = VelocityTracker.obtain()
+                velocityTracker?.addMovement(event)
+                return true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                velocityTracker?.addMovement(event)
+                if (!scrollDragging) return true
+                val dy = event.y - lastTouchX
+                lastTouchX = event.y
+                val os = 80f * density
+                scrollY = (scrollY - dy).coerceIn(-os, maxScroll + os)
+                invalidate()
+                reportScrollProgress()
+                return true
+            }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                velocityTracker?.addMovement(event)
+                velocityTracker?.computeCurrentVelocity(1000)
+                val vy = velocityTracker?.yVelocity ?: 0f
+                velocityTracker?.recycle()
+                velocityTracker = null
+                scrollDragging = false
+
+                val os = 80f * density
+                // 顶部拉出超过阈值 → 上一章
+                if (scrollY <= -os * 0.6f) {
+                    scrollY = 0f
+                    invalidate()
+                    onPrevChapter?.invoke()
+                    return true
+                }
+                // 底部拉出超过阈值 → 下一章
+                if (scrollY >= maxScroll + os * 0.6f) {
+                    scrollY = maxScroll
+                    invalidate()
+                    onNextChapter?.invoke()
+                    return true
+                }
+                // 否则惯性滑动
+                val startY = scrollY.coerceIn(0f, maxScroll).toInt()
+                overScroller.fling(
+                    0, startY, 0, (-vy).toInt(),
+                    0, 0, 0, maxScroll.toInt()
+                )
+                invalidate()
+                return true
+            }
+        }
+        return true
     }
 
     private fun changeBasePage(delta: Int) {

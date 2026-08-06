@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- V2 空状态插画：翻开的书 + 飘动的页 + 顶部光晕（替代书架插画，更"等待被填充"） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="140dp"
+    android:height="140dp"
+    android:viewportWidth="140"
+    android:viewportHeight="140">
+
+    <!-- 背景光晕 -->
+    <path
+        android:fillColor="#14B68A4A"
+        android:pathData="M70,70m-58,0a58,58 0,1 1,116 0a58,58 0,1 1,-116 0" />
+
+    <!-- 地面阴影 -->
+    <path
+        android:fillColor="#1A2D2016"
+        android:pathData="M30,118 L110,118 Q113,118 113,121 L113,123 Q113,126 110,126 L30,126 Q27,126 27,123 L27,121 Q27,118 30,118 Z" />
+
+    <!-- 飘页（左上，飘起） -->
+    <path
+        android:fillColor="#FFFAF6F1"
+        android:strokeColor="#FFD4C4B0"
+        android:strokeWidth="1"
+        android:pathData="M22,28 L36,24 L40,42 L26,46 Z" />
+    <!-- 飘页线条 -->
+    <path
+        android:fillColor="#FFB68A4A"
+        android:pathData="M27,32 L34,30"
+        android:strokeWidth="1.2"
+        android:strokeColor="#FFB68A4A" />
+    <path
+        android:fillColor="#FFB68A4A"
+        android:pathData="M28,36 L36,33.5"
+        android:strokeWidth="1.2"
+        android:strokeColor="#FFB68A4A" />
+    <path
+        android:fillColor="#FFB68A4A"
+        android:pathData="M29,40 L37,37.5"
+        android:strokeWidth="1.2"
+        android:strokeColor="#FFB68A4A" />
+
+    <!-- 飘页（右上，飘起） -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:strokeColor="#FFD4C4B0"
+        android:strokeWidth="1"
+        android:pathData="M118,30 L104,26 L100,44 L114,48 Z" />
+    <path
+        android:fillColor="#FFB68A4A"
+        android:pathData="M113,34 L106,32"
+        android:strokeWidth="1.2"
+        android:strokeColor="#FFB68A4A" />
+    <path
+        android:fillColor="#FFB68A4A"
+        android:pathData="M112,38 L104,35.5"
+        android:strokeWidth="1.2"
+        android:strokeColor="#FFB68A4A" />
+
+    <!-- 翻开的书左页 -->
+    <path
+        android:fillColor="#FFFFF7E8"
+        android:strokeColor="#FFB68A4A"
+        android:strokeWidth="0.8"
+        android:pathData="M70,56 C70,56 56,52 40,54 L40,98 C56,96 70,98 70,98 Z" />
+
+    <!-- 翻开的书右页 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:strokeColor="#FFB68A4A"
+        android:strokeWidth="0.8"
+        android:pathData="M70,56 C70,56 84,52 100,54 L100,98 C84,96 70,98 70,98 Z" />
+
+    <!-- 左页文字行 -->
+    <path
+        android:fillColor="#FFD4C4B0"
+        android:pathData="M46,66 L66,64"
+        android:strokeWidth="1.4"
+        android:strokeColor="#FFB68A4A" />
+    <path
+        android:fillColor="#FFD4C4B0"
+        android:pathData="M46,72 L62,70.5"
+        android:strokeWidth="1.4"
+        android:strokeColor="#FFB68A4A" />
+    <path
+        android:fillColor="#FFD4C4B0"
+        android:pathData="M46,78 L66,76.5"
+        android:strokeWidth="1.4"
+        android:strokeColor="#FFB68A4A" />
+    <path
+        android:fillColor="#FFD4C4B0"
+        android:pathData="M46,84 L60,82.5"
+        android:strokeWidth="1.4"
+        android:strokeColor="#FFB68A4A" />
+    <path
+        android:fillColor="#FFD4C4B0"
+        android:pathData="M46,90 L66,88"
+        android:strokeWidth="1.4"
+        android:strokeColor="#FFB68A4A" />
+
+    <!-- 右页文字行 -->
+    <path
+        android:fillColor="#FFC9A96E"
+        android:pathData="M74,64 L94,66"
+        android:strokeWidth="1.4"
+        android:strokeColor="#FFC9A96E" />
+    <path
+        android:fillColor="#FFC9A96E"
+        android:pathData="M78,70.5 L94,72"
+        android:strokeWidth="1.4"
+        android:strokeColor="#FFC9A96E" />
+    <path
+        android:fillColor="#FFC9A96E"
+        android:pathData="M74,76.5 L94,78"
+        android:strokeWidth="1.4"
+        android:strokeColor="#FFC9A96E" />
+    <path
+        android:fillColor="#FFC9A96E"
+        android:pathData="M80,82.5 L94,84"
+        android:strokeWidth="1.4"
+        android:strokeColor="#FFC9A96E" />
+    <path
+        android:fillColor="#FFC9A96E"
+        android:pathData="M74,88 L94,90"
+        android:strokeWidth="1.4"
+        android:strokeColor="#FFC9A96E" />
+
+    <!-- 中线书脊阴影 -->
+    <path
+        android:fillColor="#1A5A3E2E"
+        android:pathData="M68,56 L72,56 L72,98 L68,98 Z" />
+
+    <!-- 书签丝带 -->
+    <path
+        android:fillColor="#FFC8553D"
+        android:pathData="M82,52 L88,52 L88,72 L85,69 L82,72 Z" />
+
+    <!-- 顶部金色光点（3 颗星） -->
+    <path
+        android:fillColor="#FFE3C892"
+        android:pathData="M70,18 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+    <path
+        android:fillColor="#FFE3C892"
+        android:pathData="M55,24 m-1.5,0 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0" />
+    <path
+        android:fillColor="#FFE3C892"
+        android:pathData="M85,24 m-1.5,0 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0" />
+
+</vector>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 区块标题左侧暖棕竖条 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="0"
+        android:startColor="#FF6B4E3D"
+        android:endColor="#FFB68A4A"
+        android:type="linear" />
+    <corners android:radius="2dp" />
+</shape>

@@ -45,7 +45,9 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:scrollbars="none"
-        android:fillViewport="true">
+        android:fillViewport="true"
+        android:clipToPadding="false"
+        android:paddingTop="8dp">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -125,6 +127,183 @@
                 </LinearLayout>
             </LinearLayout>
 
+            <!-- Line Spacing Card -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_card"
+                android:elevation="4dp"
+                android:padding="20dp"
+                android:layout_marginBottom="16dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="行间距"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/textPrimary" />
+
+                    <TextView
+                        android:id="@+id/tv_line_spacing_value"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="1.6"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/colorPrimary" />
+                </LinearLayout>
+
+                <SeekBar
+                    android:id="@+id/seekbar_line_spacing"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:max="25"
+                    android:min="10"
+                    android:progress="16"
+                    android:progressTint="@color/colorPrimary"
+                    android:thumbTint="@color/colorPrimary" />
+            </LinearLayout>
+
+            <!-- Font Family Card -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_card"
+                android:elevation="4dp"
+                android:padding="20dp"
+                android:layout_marginBottom="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="字体"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/textPrimary" />
+
+                <LinearLayout
+                    android:id="@+id/font_family_group"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="16dp">
+
+                    <TextView
+                        android:id="@+id/font_family_default"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="6dp"
+                        android:gravity="center"
+                        android:text="默认"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/textOnPrimary"
+                        android:background="@drawable/bg_button_primary" />
+
+                    <TextView
+                        android:id="@+id/font_family_sans"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:layout_marginHorizontal="3dp"
+                        android:gravity="center"
+                        android:text="黑体"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/textOnPrimary"
+                        android:background="@drawable/bg_button_primary" />
+
+                    <TextView
+                        android:id="@+id/font_family_serif"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:layout_marginHorizontal="3dp"
+                        android:gravity="center"
+                        android:text="宋体"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/textOnPrimary"
+                        android:background="@drawable/bg_button_primary" />
+
+                    <TextView
+                        android:id="@+id/font_family_mono"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:layout_marginStart="6dp"
+                        android:gravity="center"
+                        android:text="等宽"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/textOnPrimary"
+                        android:background="@drawable/bg_button_primary" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="选择正文字体（默认使用系统字体）"
+                    android:textSize="13sp"
+                    android:textColor="@color/textSecondary"
+                    android:layout_marginTop="6dp" />
+            </LinearLayout>
+
+            <!-- Scroll Mode Card -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_card"
+                android:elevation="4dp"
+                android:padding="20dp"
+                android:layout_marginBottom="16dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="滚动阅读模式"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/textPrimary" />
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/switch_scroll_mode"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="false"
+                        app:thumbTint="@color/switch_thumb_selector"
+                        app:trackTint="@color/switch_track_selector" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="开启后改为连续滚动阅读；关闭则保持翻页模式"
+                    android:textSize="13sp"
+                    android:textColor="@color/textSecondary"
+                    android:layout_marginTop="6dp" />
+            </LinearLayout>
+
             <!-- Background Theme Card -->
             <LinearLayout
                 android:layout_width="match_parent"
@@ -132,12 +311,13 @@
                 android:orientation="vertical"
                 android:background="@drawable/bg_card"
                 android:elevation="4dp"
-                android:padding="20dp">
+                android:padding="20dp"
+                android:layout_marginBottom="16dp">
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="暖色背景"
+                    android:text="阅读背景"
                     android:textSize="16sp"
                     android:textStyle="bold"
                     android:textColor="@color/textPrimary" />
@@ -151,19 +331,118 @@
                     android:layout_marginTop="4dp"
                     android:layout_marginBottom="16dp" />
 
-                <HorizontalScrollView
+                <LinearLayout
+                    android:id="@+id/swatch_container"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:scrollbars="none"
-                    android:overScrollMode="never">
+                    android:orientation="vertical" />
+            </LinearLayout>
 
-                    <LinearLayout
-                        android:id="@+id/swatch_container"
+            <!-- Gesture Recognition Card -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_card"
+                android:elevation="4dp"
+                android:padding="20dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="手势翻页"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/textPrimary" />
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/switch_gesture"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:gravity="center_vertical" />
-                </HorizontalScrollView>
+                        android:checked="false"
+                        app:thumbTint="@color/switch_thumb_selector"
+                        app:trackTint="@color/switch_track_selector" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="开启后可在阅读界面通过前置摄像头挥手翻页"
+                    android:textSize="13sp"
+                    android:textColor="@color/textSecondary"
+                    android:layout_marginTop="6dp" />
+
+                <!-- 灵敏度选择 -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="识别灵敏度"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/textPrimary"
+                    android:layout_marginTop="16dp" />
+
+                <LinearLayout
+                    android:id="@+id/gesture_sensitivity_group"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="8dp">
+
+                    <TextView
+                        android:id="@+id/gesture_sensitivity_low"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="6dp"
+                        android:gravity="center"
+                        android:text="低"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/textOnPrimary"
+                        android:background="@drawable/bg_button_primary" />
+
+                    <TextView
+                        android:id="@+id/gesture_sensitivity_medium"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:layout_marginHorizontal="3dp"
+                        android:gravity="center"
+                        android:text="中"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/textOnPrimary"
+                        android:background="@drawable/bg_button_primary" />
+
+                    <TextView
+                        android:id="@+id/gesture_sensitivity_high"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:layout_marginStart="6dp"
+                        android:gravity="center"
+                        android:text="高"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/textOnPrimary"
+                        android:background="@drawable/bg_button_primary" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="低：防误触（需大幅度/快速挥手）；高：更灵敏（小幅度挥手即可触发）"
+                    android:textSize="12sp"
+                    android:textColor="@color/textSecondary"
+                    android:layout_marginTop="4dp" />
             </LinearLayout>
 
         </LinearLayout>

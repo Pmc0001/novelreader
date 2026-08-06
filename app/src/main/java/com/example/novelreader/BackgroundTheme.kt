@@ -2,13 +2,20 @@ package com.example.novelreader
 
 import android.graphics.Color
 
+enum class ThemeCategory {
+    WARM,   // 暖色调
+    COOL,   // 清新 / 中性冷色
+    NIGHT   // 夜间
+}
+
 enum class BackgroundTheme(
     val id: Int,
     val displayName: String,
     val backgroundColor: Int,
     val textColor: Int,
     val secondaryTextColor: Int,
-    val previewColor: Int
+    val previewColor: Int,
+    val category: ThemeCategory
 ) {
     WHITE(
         id = ReadingSettings.THEME_WHITE,
@@ -16,7 +23,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.WHITE,
         textColor = Color.parseColor("#454545"),
         secondaryTextColor = Color.parseColor("#999999"),
-        previewColor = Color.WHITE
+        previewColor = Color.WHITE,
+        category = ThemeCategory.COOL
     ),
     WARM_YELLOW(
         id = ReadingSettings.THEME_WARM_YELLOW,
@@ -24,7 +32,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#F5E6C8"),
         textColor = Color.parseColor("#4A4035"),
         secondaryTextColor = Color.parseColor("#8B7355"),
-        previewColor = Color.parseColor("#F5E6C8")
+        previewColor = Color.parseColor("#F5E6C8"),
+        category = ThemeCategory.WARM
     ),
     CREAM(
         id = ReadingSettings.THEME_CREAM,
@@ -32,7 +41,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#F0E4D0"),
         textColor = Color.parseColor("#4A4540"),
         secondaryTextColor = Color.parseColor("#8B7E6A"),
-        previewColor = Color.parseColor("#F0E4D0")
+        previewColor = Color.parseColor("#F0E4D0"),
+        category = ThemeCategory.WARM
     ),
     GREEN(
         id = ReadingSettings.THEME_GREEN,
@@ -40,7 +50,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#CCE8CF"),
         textColor = Color.parseColor("#3A4A3A"),
         secondaryTextColor = Color.parseColor("#6A8A6A"),
-        previewColor = Color.parseColor("#CCE8CF")
+        previewColor = Color.parseColor("#CCE8CF"),
+        category = ThemeCategory.COOL
     ),
     BLUE(
         id = ReadingSettings.THEME_BLUE,
@@ -48,7 +59,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#D6E4F0"),
         textColor = Color.parseColor("#3A4050"),
         secondaryTextColor = Color.parseColor("#6A7A90"),
-        previewColor = Color.parseColor("#D6E4F0")
+        previewColor = Color.parseColor("#D6E4F0"),
+        category = ThemeCategory.COOL
     ),
     DARK(
         id = ReadingSettings.THEME_DARK,
@@ -56,7 +68,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#1A1A2E"),
         textColor = Color.parseColor("#AAAAAA"),
         secondaryTextColor = Color.parseColor("#666666"),
-        previewColor = Color.parseColor("#1A1A2E")
+        previewColor = Color.parseColor("#1A1A2E"),
+        category = ThemeCategory.NIGHT
     ),
     WARM_WHITE(
         id = 6,
@@ -64,7 +77,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#FFF6E9"),
         textColor = Color.parseColor("#4A4538"),
         secondaryTextColor = Color.parseColor("#9C8E7A"),
-        previewColor = Color.parseColor("#FFF6E9")
+        previewColor = Color.parseColor("#FFF6E9"),
+        category = ThemeCategory.WARM
     ),
     APRICOT(
         id = 7,
@@ -72,7 +86,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#FBE3C9"),
         textColor = Color.parseColor("#4A4035"),
         secondaryTextColor = Color.parseColor("#9C8466"),
-        previewColor = Color.parseColor("#FBE3C9")
+        previewColor = Color.parseColor("#FBE3C9"),
+        category = ThemeCategory.WARM
     ),
     PEACH(
         id = 8,
@@ -80,7 +95,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#FAD9C0"),
         textColor = Color.parseColor("#4A3A30"),
         secondaryTextColor = Color.parseColor("#A07A66"),
-        previewColor = Color.parseColor("#FAD9C0")
+        previewColor = Color.parseColor("#FAD9C0"),
+        category = ThemeCategory.WARM
     ),
     ROSE(
         id = 9,
@@ -88,7 +104,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#F7D9D9"),
         textColor = Color.parseColor("#4A3535"),
         secondaryTextColor = Color.parseColor("#A07070"),
-        previewColor = Color.parseColor("#F7D9D9")
+        previewColor = Color.parseColor("#F7D9D9"),
+        category = ThemeCategory.WARM
     ),
     SEPIA(
         id = 10,
@@ -96,7 +113,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#F4E8D1"),
         textColor = Color.parseColor("#4A4030"),
         secondaryTextColor = Color.parseColor("#8B7355"),
-        previewColor = Color.parseColor("#F4E8D1")
+        previewColor = Color.parseColor("#F4E8D1"),
+        category = ThemeCategory.WARM
     ),
     LAVENDER(
         id = 11,
@@ -104,7 +122,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#E8E0F0"),
         textColor = Color.parseColor("#3D3850"),
         secondaryTextColor = Color.parseColor("#7A6F98"),
-        previewColor = Color.parseColor("#E8E0F0")
+        previewColor = Color.parseColor("#E8E0F0"),
+        category = ThemeCategory.COOL
     ),
     MINT(
         id = 12,
@@ -112,7 +131,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#D5EDDF"),
         textColor = Color.parseColor("#304A3A"),
         secondaryTextColor = Color.parseColor("#5A8A7A"),
-        previewColor = Color.parseColor("#D5EDDF")
+        previewColor = Color.parseColor("#D5EDDF"),
+        category = ThemeCategory.COOL
     ),
     PARCHMENT(
         id = 13,
@@ -120,7 +140,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#EDE0C8"),
         textColor = Color.parseColor("#4A4030"),
         secondaryTextColor = Color.parseColor("#8B7E62"),
-        previewColor = Color.parseColor("#EDE0C8")
+        previewColor = Color.parseColor("#EDE0C8"),
+        category = ThemeCategory.WARM
     ),
     GRAY(
         id = 14,
@@ -128,7 +149,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#F0F0F0"),
         textColor = Color.parseColor("#454545"),
         secondaryTextColor = Color.parseColor("#888888"),
-        previewColor = Color.parseColor("#F0F0F0")
+        previewColor = Color.parseColor("#F0F0F0"),
+        category = ThemeCategory.COOL
     ),
     WARM_PINK(
         id = 15,
@@ -136,7 +158,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#FDE8E8"),
         textColor = Color.parseColor("#4A3535"),
         secondaryTextColor = Color.parseColor("#907070"),
-        previewColor = Color.parseColor("#FDE8E8")
+        previewColor = Color.parseColor("#FDE8E8"),
+        category = ThemeCategory.WARM
     ),
     SANDSTONE(
         id = ReadingSettings.THEME_SANDSTONE,
@@ -144,7 +167,8 @@ enum class BackgroundTheme(
         backgroundColor = Color.parseColor("#DDD0BC"),
         textColor = Color.parseColor("#4A453A"),
         secondaryTextColor = Color.parseColor("#8A7E6A"),
-        previewColor = Color.parseColor("#DDD0BC")
+        previewColor = Color.parseColor("#DDD0BC"),
+        category = ThemeCategory.WARM
     );
 
     companion object {

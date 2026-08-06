@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="140dp"
+    android:height="140dp"
+    android:viewportWidth="140"
+    android:viewportHeight="140">
+
+    <!-- 底座阴影 -->
+    <path
+        android:fillColor="#10000000"
+        android:pathData="M30,108 L110,108 Q114,108 114,112 L114,114 Q114,118 110,118 L30,118 Q26,118 26,114 L26,112 Q26,108 30,108 Z" />
+
+    <!-- 书架左挡板 -->
+    <path
+        android:fillColor="#C9A96E"
+        android:pathData="M28,40 L36,40 L36,110 L28,110 Z" />
+    <!-- 书架右挡板 -->
+    <path
+        android:fillColor="#C9A96E"
+        android:pathData="M104,40 L112,40 L112,110 L104,110 Z" />
+    <!-- 书架中间隔板 -->
+    <path
+        android:fillColor="#C9A96E"
+        android:pathData="M28,40 L112,40 L112,46 L28,46 Z" />
+    <path
+        android:fillColor="#C9A96E"
+        android:pathData="M28,72 L112,72 L112,78 L28,78 Z" />
+    <!-- 书架底板 -->
+    <path
+        android:fillColor="#A88654"
+        android:pathData="M28,108 L112,108 L112,114 L28,114 Z" />
+
+    <!-- 第一层书 -->
+    <path
+        android:fillColor="#6B4E3D"
+        android:pathData="M40,48 L52,48 L52,70 L40,70 Z" />
+    <path
+        android:fillColor="#8C7A6B"
+        android:pathData="M54,52 L64,52 L64,70 L54,70 Z" />
+    <path
+        android:fillColor="#A88654"
+        android:pathData="M66,46 L78,46 L78,70 L66,70 Z" />
+    <path
+        android:fillColor="#6B4E3D"
+        android:pathData="M80,50 L90,50 L90,70 L80,70 Z" />
+    <path
+        android:fillColor="#8C7A6B"
+        android:pathData="M92,54 L100,54 L100,70 L92,70 Z" />
+
+    <!-- 第二层书（更少，凸显"空"） -->
+    <path
+        android:fillColor="#6B4E3D"
+        android:pathData="M48,80 L58,80 L58,106 L48,106 Z" />
+    <path
+        android:fillColor="#A88654"
+        android:pathData="M62,84 L72,84 L72,106 L62,106 Z" />
+
+    <!-- 飘落的一片书签（细节） -->
+    <path
+        android:fillColor="#D32F2F"
+        android:pathData="M88,76 L94,76 L94,92 L91,89 L88,92 Z" />
+</vector>

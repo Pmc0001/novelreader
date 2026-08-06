@@ -3,13 +3,21 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 
-    <color name="colorPrimary">#FF6B4E3D</color>
-    <color name="colorPrimaryDark">#FF5A3E2E</color>
-    <color name="colorAccent">#FFC9A96E</color>
+    <!-- 品牌主色：温暖棕调 -->
+    <color name="colorPrimary">#FF8B6F5C</color>
+    <color name="colorPrimaryDark">#FF7A5F4C</color>
+    <color name="colorAccent">#FFD4B896</color>
 
-    <color name="textPrimary">#FF2D2016</color>
-    <color name="textSecondary">#FF8C7A6B</color>
+    <!-- 文字色 -->
+    <color name="textPrimary">#FF3D2E22</color>
+    <color name="textSecondary">#FF9A8878</color>
     <color name="textOnPrimary">#FFFFFFFF</color>
+
+    <!-- 通用暖色文字/强调（MainActivity 列表样式复用） -->
+    <color name="ink">#FF3D2E22</color>        <!-- 深暖棕，主文字 -->
+    <color name="inkSoft">#FF9A8878</color>    <!-- 柔和暖棕，次级文字 -->
+    <color name="inkFaint">#FFC4B6A6</color>   <!-- 更淡暖棕，辅助/占位文字 -->
+    <color name="golden">#FFC9A86C</color>      <!-- 暖金强调色 -->
 
     <color name="divider">#FFE8DDD0</color>
     <color name="error">#FFD32F2F</color>
@@ -25,7 +33,13 @@
     <color name="bgBlue">#FFD6E4F0</color>
     <color name="bgDark">#FF1A1A2E</color>
 
-    <color name="topBarOverlay">#CC2D2016</color>
+    <!-- 阅读页顶/底栏 -->
+    <color name="topBarOverlay">#BB2D2016</color>
     <color name="bottomBarOverlay">#CC2D2016</color>
+    <color name="barHighlight">#80FFFFFF</color>
     <color name="overlayDim">#662D2016</color>
+
+    <!-- 阴影色 -->
+    <color name="shadowWarm">#1F3A2A1C</color>
+    <color name="shadowWarmStrong">#3F2D1F10</color>
 </resources>

@@ -13,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.core.content.ContextCompat
+import kotlin.math.roundToInt
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 
@@ -27,6 +28,7 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
         data class FontSizeChanged(val size: Int) : SettingsAction()
         data class ThemeChanged(val themeId: Int) : SettingsAction()
         data class BrightnessChanged(val brightness: Int) : SettingsAction()
+        data class LineSpacingChanged(val spacing: Float) : SettingsAction()
     }
 
     fun setOnSettingsChangedListener(listener: (SettingsAction) -> Unit) {
@@ -51,6 +53,7 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
         super.onViewCreated(view, savedInstanceState)
         setupFontSizeControl(view)
         setupBrightnessControl(view)
+        setupLineSpacingControl(view)
         setupBackgroundSelector(view)
     }
 
@@ -95,6 +98,27 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
 
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 onSettingsChanged?.invoke(SettingsAction.BrightnessChanged(currentBrightness))
+            }
+        })
+    }
+
+    private fun setupLineSpacingControl(view: View) {
+        val seekBar = view.findViewById<SeekBar>(R.id.seekbar_line_spacing)
+        val tvValue = view.findViewById<TextView>(R.id.tv_line_spacing_value)
+        val initial = (ReadingSettings(this.requireContext()).lineSpacing * 10f).roundToInt().coerceIn(10, 25)
+        seekBar.progress = initial
+        tvValue.text = String.format("%.1f", initial / 10f)
+
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                tvValue.text = String.format("%.1f", progress / 10f)
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val value = (seekBar?.progress ?: initial) / 10f
+                onSettingsChanged?.invoke(SettingsAction.LineSpacingChanged(value))
             }
         })
     }

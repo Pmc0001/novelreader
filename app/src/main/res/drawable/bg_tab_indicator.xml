@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tab 激活指示器：暖棕渐变胶囊 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="270"
+        android:startColor="#FF6B4E3D"
+        android:endColor="#FF8A6A52"
+        android:type="linear" />
+    <corners android:radius="18dp" />
+</shape>

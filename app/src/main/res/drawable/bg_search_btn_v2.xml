@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 主搜索按钮：暖棕渐变 + 顶部高光带（layer-list 实现内嵌光照感） -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 底层：暖棕渐变（暗→明） -->
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="14dp" />
+            <gradient
+                android:angle="270"
+                android:startColor="#FF5A3E2E"
+                android:endColor="#FF7A5B45"
+                android:type="linear" />
+        </shape>
+    </item>
+
+    <!-- 顶部高光带（仅上方 40%） -->
+    <item android:top="0dp" android:bottom="28dp">
+        <shape android:shape="rectangle">
+            <corners
+                android:topLeftRadius="14dp"
+                android:topRightRadius="14dp"
+                android:bottomLeftRadius="0dp"
+                android:bottomRightRadius="0dp" />
+            <gradient
+                android:angle="270"
+                android:startColor="#33FFFFFF"
+                android:endColor="#00FFFFFF"
+                android:type="linear" />
+        </shape>
+    </item>
+
+</layer-list>

@@ -125,6 +125,59 @@
             android:textColor="#99FFFFFF" />
     </LinearLayout>
 
+    <!-- Line Spacing Section -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="行间距"
+        android:textSize="13sp"
+        android:textColor="#99FFFFFF"
+        android:layout_marginBottom="10dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="紧"
+            android:textSize="12sp"
+            android:textColor="#99FFFFFF"
+            android:layout_marginEnd="8dp" />
+
+        <SeekBar
+            android:id="@+id/seekbar_line_spacing"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:max="25"
+            android:min="10"
+            android:progress="16"
+            android:progressTint="@color/colorAccent"
+            android:thumbTint="@color/colorAccent" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="松"
+            android:textSize="12sp"
+            android:textColor="#99FFFFFF"
+            android:layout_marginStart="8dp" />
+
+        <TextView
+            android:id="@+id/tv_line_spacing_value"
+            android:layout_width="40dp"
+            android:layout_height="wrap_content"
+            android:gravity="end"
+            android:text="1.6"
+            android:textSize="12sp"
+            android:textColor="#99FFFFFF" />
+    </LinearLayout>
+
     <!-- Background Theme Section -->
     <TextView
         android:layout_width="match_parent"
