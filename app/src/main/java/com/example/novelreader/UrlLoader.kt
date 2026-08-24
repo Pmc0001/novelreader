@@ -17,15 +17,25 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import org.jsoup.Jsoup
 import kotlin.coroutines.resume
 
 class UrlLoader(private val context: Context) {
+
+    // 轻量 HTTP 通道（Jsoup），用于搜索/章节/目录的快速尝试，避免每次都起 WebView。
+    private val LIGHT_FETCH_TIMEOUT_MS = 6000L
+
+    // 轻量通道通用正则/常量
+    private val lightNextRe = Regex("下一页|下一章|下一節|下一节|下章|下一|后一章|後一章|下篇|下一篇|次回|继续阅读|繼續閱讀|next chapter|next", RegexOption.IGNORE_CASE)
+    private val lightJunkRe = Regex("首页|书架|排行|分类|完本|书库|搜索|登录|注册|上一页|下一页|尾页|末页|加入书架|收藏|投票|推荐|月票|打赏|评论|最新章节|返回|下载|txt下载|阅读器|手机阅读|广告|客服|标签|作者|目录|更多|热门", RegexOption.IGNORE_CASE)
+    private val lightChapterFileRe = Regex("\\.(html?|php|asp|aspx|jsp|shtml|do|action)$", RegexOption.IGNORE_CASE)
 
     sealed class LoadResult {
         data class Success(
             val title: String,
             val content: String,
-            val nextChapterUrl: String? = null
+            val nextChapterUrl: String? = null,
+            val bookTitle: String? = null
         ) : LoadResult()
         data class Error(val message: String) : LoadResult()
     }
@@ -52,6 +62,16 @@ class UrlLoader(private val context: Context) {
         // 外层兜底：WebView 构造、attachWebView 原本在 try 之外，一旦抛异常会绕过
         // catch(Exception) 直接冒泡到 lifecycleScope.launch，导致整个应用崩溃（回到书架主页）。
         // 这里用外层 try + catch(Throwable) 把"加载失败"统一收敛为 Error，绝不向上抛。
+        // 轻量通道优先：OkHttp+Jsoup 直接拉取并解析正文，成功则跳过 WebView（快、省电、不转圈）。
+        try {
+            val light = fetchChapterLight(url)
+            if (light is LoadResult.Success) {
+                Log.d("UrlLoader", "loadUrl: light channel hit, len=${'$'}{light.content.length}")
+                return@withContext light
+            }
+        } catch (e: Exception) {
+            Log.d("UrlLoader", "loadUrl: light channel failed, fallback to WebView: ${'$'}{e.message}")
+        }
         var webViewRef: WebView? = null
         var rootRef: ViewGroup? = null
         try {
@@ -318,6 +338,16 @@ class UrlLoader(private val context: Context) {
     @SuppressLint("SetJavaScriptEnabled")
     suspend fun loadChapterList(url: String): ChapterListResult = withContext(Dispatchers.Main) {
         // webView 创建与销毁兜底由下方 return@withContext try/catch/finally 统一处理
+        // 轻量通道优先：直接拉目录页解析章节列表，命中则跳过 WebView。
+        try {
+            val light = fetchChapterListLight(url)
+            if (light != null && light.isNotEmpty()) {
+                Log.d("UrlLoader", "loadChapterList: light channel hit, ${'$'}{light.size} chapters")
+                return@withContext ChapterListResult.Success(light)
+            }
+        } catch (e: Exception) {
+            Log.d("UrlLoader", "loadChapterList: light channel hit failed, fallback to WebView: ${'$'}{e.message}")
+        }
         var webViewRef: WebView? = null
         var rootRef: ViewGroup? = null
         val webView = WebView(context.applicationContext)
@@ -945,6 +975,21 @@ class UrlLoader(private val context: Context) {
                 }
             }
 
+            // 轻量通道优先：用 OkHttp+Jsoup 直接拉搜索结果页并解析（大部分书源为服务端渲染）。
+            // 命中关键词即返回，避免 WebView 轮询 12s 的慢与"一直转圈"。WebView 仅作兜底。
+            try {
+                for (ci in 0 until source.candidateCount()) {
+                    val su = source.buildSearchUrl(keyword, ci)
+                    val light = fetchSearchLight(su, keyword)
+                    if (light != null && light.isNotEmpty()) {
+                        Log.d("UrlLoader", "searchBooks: light channel hit for ${'$'}su, ${'$'}{light.size} items")
+                        return@withContext SearchResult.Success(light)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d("UrlLoader", "searchBooks: light channel failed, fallback to WebView: ${'$'}{e.message}")
+            }
+
             val root = (context as? Activity)?.findViewById<ViewGroup>(android.R.id.content)
             rootRef = root
             attachWebView(webView, root)
@@ -1217,4 +1262,226 @@ class UrlLoader(private val context: Context) {
         }
         return sb.toString()
     }
+    // ===================== 轻量 HTTP 通道（OkHttp + Jsoup） =====================
+
+    internal suspend fun fetchChapterLight(url: String): LoadResult = withContext(Dispatchers.IO) {
+        withTimeout(LIGHT_FETCH_TIMEOUT_MS) {
+            val doc = try {
+                Jsoup.connect(url)
+                    .userAgent("Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36")
+                    .header("Accept-Language", "zh-CN,zh;q=0.9")
+                    .timeout(6000)
+                    .get()
+            } catch (e: Exception) {
+                return@withTimeout LoadResult.Error("轻量抓取失败: ${e.message}")
+            }
+            if (isCloudflareChallenge(doc)) return@withTimeout LoadResult.Error("轻量抓取遇到反爬验证")
+            val title = extractChapterTitle(doc)
+            val content = extractContentFromDoc(doc)
+            if (content.isBlank()) return@withTimeout LoadResult.Error("轻量抓取正文为空")
+            val next = findNextUrl(doc, url)
+            val bookTitle = extractBookTitleFromDocTitle(doc)
+            LoadResult.Success(title, content, next, bookTitle)
+        }
+    }
+
+    private suspend fun fetchChapterListLight(url: String): List<ChapterItem>? = withContext(Dispatchers.IO) {
+        withTimeout(LIGHT_FETCH_TIMEOUT_MS) {
+            val target = url
+            val doc = try {
+                Jsoup.connect(target)
+                    .userAgent("Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36")
+                    .header("Accept-Language", "zh-CN,zh;q=0.9")
+                    .timeout(6000)
+                    .get()
+            } catch (e: Exception) {
+                return@withTimeout null
+            }
+            if (isCloudflareChallenge(doc)) return@withTimeout null
+            val items = extractChapterListFromDoc(doc, target)
+            if (items.isEmpty()) null else items
+        }
+    }
+
+    private suspend fun fetchSearchLight(searchUrl: String, keyword: String): List<SearchItem>? = withContext(Dispatchers.IO) {
+        withTimeout(LIGHT_FETCH_TIMEOUT_MS) {
+            val doc = try {
+                Jsoup.connect(searchUrl)
+                    .userAgent("Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36")
+                    .header("Accept-Language", "zh-CN,zh;q=0.9")
+                    .timeout(6000)
+                    .get()
+            } catch (e: Exception) {
+                return@withTimeout null
+            }
+            if (isCloudflareChallenge(doc)) return@withTimeout null
+            val items = extractSearchFromDoc(doc, searchUrl, keyword)
+            if (items.isEmpty()) null else items
+        }
+    }
+
+    private fun extractSearchFromDoc(doc: org.jsoup.nodes.Document, baseUrl: String, keyword: String): List<SearchItem> {
+        val kw = keyword.lowercase()
+        val res = mutableListOf<SearchItem>()
+        val seen = mutableSetOf<String>()
+        val sels = arrayOf(
+            "#site_search_list", ".result-list", ".book-list", ".search-list", ".search-result",
+            ".search-result-list", ".novel-list", ".bookname", ".book-item", ".result-item",
+            ".item", ".list", "#list", ".searchbox .book", ".search-results", ".mod_book_list",
+            ".bookbox", ".books", ".book_list", ".updateList", ".listBox", ".search-results-list",
+            ".result-box", "td.odd", "td.even", "tr.odd a", "tr.even a", "table.grid a", ".grid tr a"
+        )
+        val candidates = mutableListOf<org.jsoup.nodes.Element>()
+        for (sel in sels) {
+            candidates.addAll(doc.select(sel).select("a"))
+        }
+        candidates.addAll(doc.select("a"))
+        for (a in candidates) {
+            val href = a.attr("href") ?: continue
+            if (href.isEmpty() || href.startsWith("javascript:") || href.startsWith("#")) continue
+            val abs = try { java.net.URL(java.net.URL(baseUrl), href).toString() } catch (_: Exception) { continue }
+            val u0 = abs.split("#")[0]
+            if (u0 == baseUrl.split("#")[0]) continue
+            val t = a.text().replace("\\s+".toRegex(), " ").trim()
+            if (t.isEmpty() || t.length > 60 || t.length < 2) continue
+            if (seen.contains(u0)) continue
+            if (kw.isNotEmpty() && t.lowercase().indexOf(kw) < 0) continue
+            seen.add(u0)
+            res.add(SearchItem(t, u0))
+            if (res.size >= 30) break
+        }
+        return res
+    }
+
+    private fun extractChapterListFromDoc(doc: org.jsoup.nodes.Document, baseUrl: String): List<ChapterItem> {
+        val seen = mutableSetOf<String>()
+        val res = mutableListOf<ChapterItem>()
+        val sels = arrayOf(
+            "#list", "#chapterlist", ".list", ".chapter-list", ".catalog", ".mu_lu", ".mulu",
+            ".book_list", "dl", "ol", "ul", "table", ".volume", ".volume-list", ".chapters"
+        )
+        val containers = mutableListOf<org.jsoup.nodes.Element>()
+        for (sel in sels) containers.addAll(doc.select(sel))
+        if (containers.isEmpty()) containers.add(doc.body())
+        for (c in containers) {
+            for (a in c.select("a")) {
+                val href = a.attr("href") ?: continue
+                if (href.isEmpty() || href.startsWith("javascript:") || href.startsWith("#")) continue
+                val abs = try { java.net.URL(java.net.URL(baseUrl), href).toString() } catch (_: Exception) { continue }
+                val u0 = abs.split("#")[0]
+                if (u0 == baseUrl.split("#")[0]) continue
+                val t = a.text().replace("\\s+".toRegex(), " ").trim()
+                if (t.isEmpty() || t.length > 60 || t.length < 2) continue
+                if (lightJunkRe.containsMatchIn(t)) continue
+                if (seen.contains(u0)) continue
+                seen.add(u0)
+                res.add(ChapterItem(t, u0))
+            }
+        }
+        if (res.isEmpty()) {
+            for (a in doc.select("a")) {
+                val href = a.attr("href") ?: continue
+                if (href.isEmpty() || href.startsWith("javascript:") || href.startsWith("#")) continue
+                val abs = try { java.net.URL(java.net.URL(baseUrl), href).toString() } catch (_: Exception) { continue }
+                val u0 = abs.split("#")[0]
+                if (u0 == baseUrl.split("#")[0]) continue
+                val t = a.text().replace("\\s+".toRegex(), " ").trim()
+                if (t.isEmpty() || t.length > 60 || t.length < 2) continue
+                if (lightJunkRe.containsMatchIn(t)) continue
+                if (seen.contains(u0)) continue
+                seen.add(u0)
+                res.add(ChapterItem(t, u0))
+            }
+        }
+        return res
+    }
+
+    private fun extractContentFromDoc(doc: org.jsoup.nodes.Document): String {
+        val clone = doc.body().clone()
+        clone.select("script,style,nav,header,footer,aside,a,img,figure,iframe,.recommend,.page-link,.bottom-link,.ad,.popup,.modal").remove()
+        var best: org.jsoup.nodes.Element? = null
+        var bestLen = 0
+        for (cand in arrayOf("div.content", ".content", "#content", "div.chaptercontent", ".chaptercontent", "#chaptercontent", "article", ".article", "#article", "div.read", ".read", "#read", "div.txt", ".txt")) {
+            for (e in doc.select(cand)) {
+                val len = e.text().length
+                if (len > bestLen) { bestLen = len; best = e }
+            }
+        }
+        val text = if (best != null) cleanText(collectText(best)) else cleanText(collectText(clone))
+        return text
+    }
+
+    private fun extractChapterTitle(doc: org.jsoup.nodes.Document): String {
+        val h = doc.selectFirst("h1,h2,h3,h4")
+        val t = h?.text() ?: doc.title() ?: ""
+        return cleanText(t)
+    }
+
+    private fun findNextUrl(doc: org.jsoup.nodes.Document, baseUrl: String): String? {
+        for (a in doc.select("a")) {
+            val lt = (a.text() + " " + (a.attr("title") ?: ""))
+            val cls = (a.className() ?: "").lowercase()
+            val rel = (a.attr("rel") ?: "").lowercase()
+            val href = a.attr("href") ?: continue
+            if (href.startsWith("javascript:")) continue
+            if (lightNextRe.containsMatchIn(lt) || cls.indexOf("next") >= 0 || rel == "next") {
+                val abs = try { java.net.URL(java.net.URL(baseUrl), href).toString() } catch (_: Exception) { continue }
+                if (abs.split("#")[0] != baseUrl.split("#")[0]) return abs
+            }
+        }
+        return null
+    }
+
+    private fun isCloudflareChallenge(doc: org.jsoup.nodes.Document): Boolean {
+        val dt = (doc.title() ?: "").lowercase()
+        val bd = (doc.body()?.text() ?: "").lowercase()
+        return dt.indexOf("just a moment") >= 0 || dt.indexOf("attention required") >= 0 ||
+            bd.indexOf("enable javascript and cookies") >= 0 || bd.indexOf("checking your browser") >= 0
+    }
+
+    private fun extractBookTitleFromDocTitle(doc: org.jsoup.nodes.Document): String? {
+        val dt = doc.title() ?: return null
+        val parts = dt.split("-", "_", "—")
+        if (parts.size >= 2) {
+            val cand = parts[parts.size - 2].trim()
+            if (cand.isNotBlank()) return stripBookNameBrackets(cand)
+        }
+        return null
+    }
+
+    private fun stripBookNameBrackets(s: String): String {
+        return s.replace("[(\\[【《](.*?)[)\\]】》]".toRegex(), "").trim()
+    }
+
+    private fun collectText(node: org.jsoup.nodes.Node): String {
+        val sb = StringBuilder()
+        fun walk(n: org.jsoup.nodes.Node) {
+            if (n is org.jsoup.nodes.TextNode) {
+                sb.append(n.text())
+            } else if (n is org.jsoup.nodes.Element) {
+                if (isJunkElement(n)) return
+                if (n.tagName() == "br") sb.append("\n")
+                else if (n.tagName() == "p" || n.tagName() == "div") { sb.append("\n"); n.childNodes().forEach { walk(it) }; sb.append("\n") }
+                else n.childNodes().forEach { walk(it) }
+            }
+        }
+        node.childNodes().forEach { walk(it) }
+        return sb.toString()
+    }
+
+    private fun isJunkElement(e: org.jsoup.nodes.Element): Boolean {
+        val cls = (e.className() ?: "").lowercase()
+        val id = (e.id() ?: "").lowercase()
+        return cls.contains("ad") || cls.contains("recommend") || cls.contains("nav") ||
+            id.contains("nav") || cls.contains("footer") || cls.contains("header") ||
+            e.tagName() == "script" || e.tagName() == "style"
+    }
+
+    private fun cleanText(s: String): String {
+        return s.replace("\r\n".toRegex(), "\n")
+            .replace("[ \t]+".toRegex(), " ")
+            .replace("\n{3,}".toRegex(), "\n\n")
+            .trim()
+    }
+
 }

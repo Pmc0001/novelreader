@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 跟随主题色块：白底 + 灰色虚线边 + 文字 "A"(auto) 的语义暗示 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="#F5F5F5" />
+            <stroke
+                android:width="1.5dp"
+                android:color="#BBBBBB"
+                android:dashWidth="3dp"
+                android:dashGap="2dp" />
+        </shape>
+    </item>
+</layer-list>

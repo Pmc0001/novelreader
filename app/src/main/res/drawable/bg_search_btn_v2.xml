@@ -1,30 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 主搜索按钮：暖棕渐变 + 顶部高光带（layer-list 实现内嵌光照感） -->
+<!-- 方案B 主搜索按钮：琥珀→珊瑚渐变 + 顶部柔和高光 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 底层：暖棕渐变（暗→明） -->
+    <!-- 底层：琥珀→珊瑚斜向渐变 -->
     <item>
         <shape android:shape="rectangle">
-            <corners android:radius="14dp" />
+            <corners android:radius="16dp" />
             <gradient
-                android:angle="270"
-                android:startColor="#FF5A3E2E"
-                android:endColor="#FF7A5B45"
+                android:angle="45"
+                android:startColor="#FFC77F"
+                android:centerColor="#FFB36B"
+                android:endColor="#FF9A6A"
                 android:type="linear" />
         </shape>
     </item>
 
-    <!-- 顶部高光带（仅上方 40%） -->
-    <item android:top="0dp" android:bottom="28dp">
+    <!-- 顶部柔和高光带（仅上方，柔和过渡） -->
+    <item android:top="0dp" android:bottom="30dp">
         <shape android:shape="rectangle">
             <corners
-                android:topLeftRadius="14dp"
-                android:topRightRadius="14dp"
+                android:topLeftRadius="16dp"
+                android:topRightRadius="16dp"
                 android:bottomLeftRadius="0dp"
                 android:bottomRightRadius="0dp" />
             <gradient
                 android:angle="270"
-                android:startColor="#33FFFFFF"
+                android:startColor="#22FFFFFF"
                 android:endColor="#00FFFFFF"
                 android:type="linear" />
         </shape>

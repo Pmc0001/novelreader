@@ -6,7 +6,17 @@
         <item name="colorAccent">@color/colorAccent</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <!-- 全面屏/挖孔：内容可延伸至短边（状态栏、导航栏、挖孔区域），
+             由各页顶栏的 statusBar safe-area 与底部 navigationBars padding 避开遮挡 -->
+        <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="o_mr1">shortEdges</item>
     </style>
 
     <style name="Theme.NovelReader" parent="Base.Theme.NovelReader" />
+
+    <!-- MainActivity 专用：深空极光背景，状态栏 / 导航栏图标使用浅色 -->
+    <style name="Theme.NovelReader.Main" parent="Theme.NovelReader">
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">false</item>
+    </style>
 </resources>

@@ -4,6 +4,9 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
+import java.io.File
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
@@ -33,6 +36,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loadingView: PremiumLoadingView
     private lateinit var shelfTab: TextView
     private lateinit var historyTab: TextView
+    private lateinit var hero: LinearLayout
     private var listTab: Int = 0   // 0 = 书架, 1 = 阅读历史
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,19 +46,28 @@ class MainActivity : AppCompatActivity() {
 
         prefs = getPreferences(MODE_PRIVATE)
 
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
-            insets
-        }
-
         setupUI()
+        handleIncomingOpenIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingOpenIntent(intent)
     }
 
     override fun onResume() {
         super.onResume()
         checkClipboardForNovelUrl()
         refreshList()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // 退出 app 时默认关闭手势翻页：下次启动需手动开启，避免摄像头被意外启动
+        if (isFinishing) {
+            ReadingSettings(this).gestureEnabled = false
+        }
     }
 
     private fun setupUI() {
@@ -80,7 +93,7 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_HORIZONTAL
         }
 
-        val hero = LinearLayout(this).apply {
+        hero = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -112,17 +125,21 @@ class MainActivity : AppCompatActivity() {
                 Gravity.CENTER
             )
             scaleType = ImageView.ScaleType.FIT_CENTER
+            // 暖棕滤镜，让 logo 与暖色光晕融合为统一徽章
+            setColorFilter(0xFF7A5230.toInt())
         }
         logoGlow.addView(logo)
 
         val brandTitle = TextView(this).apply {
             text = "小说阅读器"
             textSize = 28f
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.ink))
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textPrimary))
             typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
             letterSpacing = 0.12f
             setPadding((14 * density).toInt(), 0, 0, 0)
             includeFontPadding = false
+            // 柔和暖棕阴影，在浅色纸张背景上保留轻微浮空感
+            setShadowLayer(10f, 0f, 0f, 0x227A5230)
         }
         val heroRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -134,7 +151,7 @@ class MainActivity : AppCompatActivity() {
         val brandSubtitle = TextView(this).apply {
             text = "粘贴链接或搜索书名，开启你的阅读之旅"
             textSize = 14f
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.inkSoft))
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textSecondary))
             setPadding(0, (14 * density).toInt(), 0, 0)
             gravity = Gravity.CENTER
             letterSpacing = 0.05f
@@ -169,7 +186,6 @@ class MainActivity : AppCompatActivity() {
                 topMargin = (-24 * density).toInt()
             }
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_card_v2)
-            elevation = 8 * density
             setPadding(
                 (18 * density).toInt(),
                 (22 * density).toInt(),
@@ -187,7 +203,6 @@ class MainActivity : AppCompatActivity() {
                 (56 * density).toInt()
             )
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_search_btn_v2)
-            elevation = 8 * density
             setOnClickListener {
                 startActivity(Intent(this@MainActivity, SearchActivity::class.java))
             }
@@ -199,12 +214,13 @@ class MainActivity : AppCompatActivity() {
                 (22 * density).toInt()
             )
             scaleType = ImageView.ScaleType.FIT_CENTER
-            setColorFilter(ContextCompat.getColor(this@MainActivity, R.color.textOnPrimary))
+            // 深空紫图标，在亮色霓虹渐变按钮上保持高对比
+            setColorFilter(0xFF3D2E22.toInt())
         }
         val searchLabel = TextView(this).apply {
             text = "搜索书名开始阅读"
             textSize = 16f
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textOnPrimary))
+            setTextColor(0xFF3D2E22.toInt())
             typeface = Typeface.DEFAULT_BOLD
             letterSpacing = 0.05f
             setPadding((10 * density).toInt(), 0, 0, 0)
@@ -246,12 +262,12 @@ class MainActivity : AppCompatActivity() {
                 (20 * density).toInt()
             )
             scaleType = ImageView.ScaleType.FIT_CENTER
-            setColorFilter(ContextCompat.getColor(this@MainActivity, R.color.golden))
+            setColorFilter(ContextCompat.getColor(this@MainActivity, R.color.colorPrimary))
         }
         val loadUrlLabel = TextView(this).apply {
             text = "粘贴链接"
             textSize = 14f
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.ink))
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textPrimary))
             typeface = Typeface.DEFAULT_BOLD
             setPadding((6 * density).toInt(), 0, 0, 0)
         }
@@ -265,7 +281,7 @@ class MainActivity : AppCompatActivity() {
                 0,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 1f
-            ).apply { marginStart = (6 * density).toInt() }
+            ).apply { marginStart = (6 * density).toInt(); marginEnd = (6 * density).toInt() }
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_secondary_btn_v2)
             setPadding(
                 (12 * density).toInt(),
@@ -285,21 +301,99 @@ class MainActivity : AppCompatActivity() {
                 (20 * density).toInt()
             )
             scaleType = ImageView.ScaleType.FIT_CENTER
-            setColorFilter(ContextCompat.getColor(this@MainActivity, R.color.golden))
+            setColorFilter(ContextCompat.getColor(this@MainActivity, R.color.colorPrimary))
         }
         val statsLabel = TextView(this).apply {
             text = "阅读统计"
             textSize = 14f
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.ink))
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textPrimary))
             typeface = Typeface.DEFAULT_BOLD
             setPadding((6 * density).toInt(), 0, 0, 0)
         }
         statsCard.addView(statsIcon)
         statsCard.addView(statsLabel)
 
+        val stepsCard = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            ).apply { marginStart = (6 * density).toInt() }
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_secondary_btn_v2)
+            setPadding(
+                (12 * density).toInt(),
+                (14 * density).toInt(),
+                (12 * density).toInt(),
+                (14 * density).toInt()
+            )
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, StepsActivity::class.java))
+            }
+        }
+        val stepsIcon = ImageView(this).apply {
+            setImageResource(R.drawable.ic_steps)
+            layoutParams = LinearLayout.LayoutParams(
+                (20 * density).toInt(),
+                (20 * density).toInt()
+            )
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setColorFilter(ContextCompat.getColor(this@MainActivity, R.color.colorPrimary))
+        }
+        val stepsLabel = TextView(this).apply {
+            text = "今日步数"
+            textSize = 14f
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textPrimary))
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding((6 * density).toInt(), 0, 0, 0)
+        }
+        stepsCard.addView(stepsIcon)
+        stepsCard.addView(stepsLabel)
+
         secondaryRow.addView(loadUrlCard)
         secondaryRow.addView(statsCard)
+        secondaryRow.addView(stepsCard)
         cardLayout.addView(secondaryRow)
+
+        // 设置按钮
+        val settingsCard = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = (10 * density).toInt() }
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_secondary_btn_v2)
+            setPadding(
+                (12 * density).toInt(),
+                (14 * density).toInt(),
+                (12 * density).toInt(),
+                (14 * density).toInt()
+            )
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+            }
+        }
+        val settingsIcon = ImageView(this).apply {
+            setImageResource(R.drawable.ic_settings)
+            layoutParams = LinearLayout.LayoutParams(
+                (20 * density).toInt(),
+                (20 * density).toInt()
+            )
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setColorFilter(ContextCompat.getColor(this@MainActivity, R.color.colorPrimary))
+        }
+        val settingsLabel = TextView(this).apply {
+            text = "阅读设置"
+            textSize = 14f
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textPrimary))
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding((6 * density).toInt(), 0, 0, 0)
+        }
+        settingsCard.addView(settingsIcon)
+        settingsCard.addView(settingsLabel)
+        cardLayout.addView(settingsCard)
 
         historyContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -364,7 +458,7 @@ class MainActivity : AppCompatActivity() {
             text = "v${BuildConfig.VERSION_NAME}"
             textSize = 12f
             setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textSecondary))
-            alpha = 0.5f
+            alpha = 0.7f
             gravity = Gravity.CENTER
             setPadding(0, 8, 0, 24)
             letterSpacing = 0.05f
@@ -379,6 +473,20 @@ class MainActivity : AppCompatActivity() {
 
         scrollView.addView(mainLayout)
         rootLayout.addView(scrollView)
+
+        // 沉浸式状态栏：内容延伸至状态栏后方，仅底部留出导航栏空间
+        // hero 顶部 padding 叠加状态栏高度，保证标题不被状态栏遮挡
+        ViewCompat.setOnApplyWindowInsetsListener(rootLayout) { v, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(0, 0, 0, systemBars.bottom)
+            hero.setPadding(
+                (24 * density).toInt(),
+                (systemBars.top + (48 * density).toInt()),
+                (24 * density).toInt(),
+                (44 * density).toInt()
+            )
+            insets
+        }
     }
 
     private fun refreshList() {
@@ -388,8 +496,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateTabs() {
         val indicator = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_tab_indicator)
-        val activeText = ContextCompat.getColor(this@MainActivity, R.color.textOnPrimary)
-        val inactiveText = ContextCompat.getColor(this@MainActivity, R.color.inkSoft)
+        // 激活文字用深空紫，在亮色霓虹渐变指示器上保持高对比
+        val activeText = 0xFF3D2E22.toInt()
+        val inactiveText = ContextCompat.getColor(this@MainActivity, R.color.textSecondary)
         shelfTab.background = if (listTab == 0) indicator else null
         historyTab.background = if (listTab == 1) indicator else null
         shelfTab.setTextColor(if (listTab == 0) activeText else inactiveText)
@@ -413,7 +522,7 @@ class MainActivity : AppCompatActivity() {
             val arrow = TextView(this@MainActivity).apply {
                 text = "继续 ›"
                 textSize = 14f
-                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.golden))
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.colorPrimary))
                 typeface = Typeface.DEFAULT_BOLD
                 setPadding((16 * density).toInt(), 0, 0, 0)
             }
@@ -423,7 +532,7 @@ class MainActivity : AppCompatActivity() {
         val clearBtn = TextView(this@MainActivity).apply {
             text = "清除历史记录"
             textSize = 13f
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.inkSoft))
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textSecondary))
             gravity = Gravity.CENTER
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_secondary_btn_v2)
             setPadding((24 * density).toInt(), (10 * density).toInt(), (24 * density).toInt(), (10 * density).toInt())
@@ -469,7 +578,7 @@ class MainActivity : AppCompatActivity() {
             val remove = TextView(this@MainActivity).apply {
                 text = "移出"
                 textSize = 14f
-                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.inkSoft))
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textSecondary))
                 setPadding((16 * density).toInt(), 0, 0, 0)
                 setOnClickListener {
                     HistoryStore(this@MainActivity).removeFromShelf(item.bookKey)
@@ -482,7 +591,7 @@ class MainActivity : AppCompatActivity() {
         val clearBtn = TextView(this@MainActivity).apply {
             text = "清空书架"
             textSize = 13f
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.inkSoft))
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textSecondary))
             gravity = Gravity.CENTER
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_secondary_btn_v2)
             setPadding((24 * density).toInt(), (10 * density).toInt(), (24 * density).toInt(), (10 * density).toInt())
@@ -538,7 +647,7 @@ class MainActivity : AppCompatActivity() {
         val tvTitle = TextView(this@MainActivity).apply {
             text = title
             textSize = 17f
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.ink))
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textPrimary))
             typeface = Typeface.DEFAULT_BOLD
             letterSpacing = 0.04f
             includeFontPadding = false
@@ -546,7 +655,7 @@ class MainActivity : AppCompatActivity() {
         val tvSub = TextView(this@MainActivity).apply {
             text = subtitle
             textSize = 12f
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.inkFaint))
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textSecondary))
             letterSpacing = 0.05f
             setPadding(0, (2 * density).toInt(), 0, 0)
         }
@@ -557,10 +666,49 @@ class MainActivity : AppCompatActivity() {
         return wrap
     }
 
-    private fun rowSubtitle(item: HistoryItem): String = when {
-        item.totalPages > 0 -> "上次读到第 ${item.position + 1} / ${item.totalPages} 页"
-        item.position > 0 -> "已读 ${item.position}%"
-        else -> "点击继续阅读"
+    /**
+     * 历史/书架项的"书名"展示层的最后一道理防线：
+     * 当 HistoryItem.title 被早期 bug 误存成 url.host（"www.sudugu.org"）或章节名时，
+     * 不要把这种坏值原样吐给用户，否则列表看起来像"我读了一个网址"。
+     * 渲染时把它替换成"未知书目"，并把 chapterTitle 顶上来作为主视觉锚点（如果有）。
+     */
+    private fun friendlyTitleFor(item: HistoryItem): String {
+        if (looksLikeBadBookTitle(item)) {
+            val chap = item.chapterTitle.trim()
+            return if (chap.isNotEmpty()) "$chap（书名待修正）" else "未知书目"
+        }
+        return item.title.trim()
+    }
+
+    /**
+     * 判定一条历史项的书名是否"不像正常书名"。
+     * 命中以下任一即视为坏：
+     *   - 空串 / 含 ://
+     *   - 跟 url.host 完全一致
+     *   - 像 URL 主机名（含 . 全 ASCII 无空格）
+     *   - 像章节标题（以"第"开头且含"章/回/节"）——早期 bug 把章节名误存进了 title 字段
+     */
+    private fun looksLikeBadBookTitle(item: HistoryItem): Boolean {
+        val t = item.title.trim()
+        if (t.isEmpty()) return true
+        if (t.contains("://")) return true
+        val host = try { java.net.URI(item.url).host.orEmpty() } catch (_: Exception) { "" }
+        if (host.isNotBlank() && t == host) return true
+        if (t.contains('.') && !t.contains(' ') && t.all { it.isLetterOrDigit() || it in ".-" }) return true
+        // 章节标题模式：以"第"开头 + 章节量词，避免一些异常或者翻译得不干净的书名误触（合法书名"第三帝国的兴亡"等极少见，这里判"第+数字+章/回/节"更稳）
+        val chapterPattern = Regex("""^第[\s\u00A0]*[0-9\u4e00-\u9fff]{1,8}[章回节]""")
+        if (chapterPattern.containsMatchIn(t)) return true
+        return false
+    }
+
+    private fun rowSubtitle(item: HistoryItem): String {
+        val base = when {
+            item.totalPages > 0 -> "上次读到第 ${item.position + 1} / ${item.totalPages} 页"
+            item.position > 0 -> "已读 ${item.position}%"
+            else -> "点击继续阅读"
+        }
+        // 老坏数据：标题是 url.host 或章节标题拼接的临时退化。提示用户点"继续"重读一章即可自愈。
+        return if (looksLikeBadBookTitle(item)) "$base · 书名待修正" else base
     }
 
     private fun makeBookRow(item: HistoryItem, subtitle: String, trailing: View, onRowClick: () -> Unit): LinearLayout {
@@ -607,13 +755,14 @@ class MainActivity : AppCompatActivity() {
             )
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_cover_spine)
         }
-        // 书名首字（衬线粗体 + 字母间距，强化"书脊字"感）
+        // 书名首字（衬线粗体 + 字母间距 + 柔光阴影，强化"书脊字"浮空感）
+        // 用 friendlyTitleFor 兜底后的标题，避免坏数据("www.sudugu.org")把封面首字也变成'w'。
         val coverInitial = TextView(this@MainActivity).apply {
-            text = item.title.firstOrNull()?.toString() ?: "书"
+            text = friendlyTitleFor(item).firstOrNull()?.toString() ?: "书"
             textSize = 26f
             setTextColor(0xFFFFFFFF.toInt())
             typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
-            alpha = 0.92f
+            alpha = 0.95f
             letterSpacing = 0.05f
             setPadding((6 * density).toInt(), 0, 0, 0)  // 平衡书脊侧条的视觉偏左
             layoutParams = FrameLayout.LayoutParams(
@@ -621,6 +770,8 @@ class MainActivity : AppCompatActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
             gravity = Gravity.CENTER
+            // 柔光阴影提升首字在彩色封面上的可读性与质感
+            setShadowLayer(8f, 0f, 2f, 0xCC000000.toInt())
         }
         cover.addView(coverBase)
         cover.addView(coverSpine)
@@ -632,12 +783,23 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         val tvTitle = TextView(this@MainActivity).apply {
-            text = item.title
+            text = friendlyTitleFor(item)
             textSize = 15f
             setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textPrimary))
             typeface = Typeface.DEFAULT_BOLD
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
+        }
+        // 当前所在章节（换章后随阅读进度更新，避免列表"看起来没更新"）
+        // 当 friendlyTitleFor 已经把 chapterTitle 拼进 title 时，避免重复展示。
+        val tvChapter = TextView(this@MainActivity).apply {
+            text = item.chapterTitle
+            textSize = 12f
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.colorPrimary))
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, (3 * density).toInt(), 0, 0)
+            visibility = if (looksLikeBadBookTitle(item) || item.chapterTitle.isBlank()) View.GONE else View.VISIBLE
         }
         val tvSub = TextView(this@MainActivity).apply {
             text = subtitle
@@ -676,6 +838,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         textLayout.addView(tvTitle)
+        textLayout.addView(tvChapter)
         textLayout.addView(tvSub)
         textLayout.addView(progressBar)
 
@@ -687,12 +850,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 根据 bookKey 生成稳定的"封面"颜色（柔和饱和、偏高亮度，给书名字符提供可读对比度）
+     * 根据 bookKey 生成稳定的"封面"颜色（高饱和、中等亮度，在深空极光背景下更突出）
      */
     private fun coverColorFor(key: String): Int {
         val h = ((key.hashCode() and 0x7FFFFFFF) % 360).toFloat()
-        // 饱和度 0.45、亮度 0.72——既不刺眼也保留个性，与暖色 UI 调性兼容
-        return Color.HSVToColor(floatArrayOf(h, 0.45f, 0.72f))
+        // 饱和度 0.55、亮度 0.5——鲜艳但不刺眼，白字首字保持高可读对比度
+        return Color.HSVToColor(floatArrayOf(h, 0.55f, 0.5f))
     }
 
     /**
@@ -738,11 +901,14 @@ class MainActivity : AppCompatActivity() {
                     (160 * density).toInt()
                 )
                 scaleType = ImageView.ScaleType.FIT_CENTER
+                // 霓虹青滤镜 + 柔光，让插画在深空玻璃卡上浮现
+                setColorFilter(ContextCompat.getColor(this@MainActivity, R.color.colorPrimary))
+                imageTintList = null
             }
             val tvTitle = TextView(this@MainActivity).apply {
                 text = title
                 textSize = 17f
-                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.ink))
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textPrimary))
                 typeface = Typeface.DEFAULT_BOLD
                 letterSpacing = 0.04f
                 setPadding(0, (18 * density).toInt(), 0, 0)
@@ -751,7 +917,7 @@ class MainActivity : AppCompatActivity() {
             val tvSub = TextView(this@MainActivity).apply {
                 text = subtitle
                 textSize = 13f
-                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.inkSoft))
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textSecondary))
                 setPadding(0, (6 * density).toInt(), 0, 0)
                 gravity = Gravity.CENTER
                 letterSpacing = 0.03f
@@ -763,6 +929,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openBook(item: HistoryItem) {
+        // 本地书（url 指向本应用 cacheDir 下的 localbook_*.txt）：直接以本地方式打开，
+        // 若缓存文件已被系统清理则优雅降级（从书架移除并提示）。
+        if (item.url.startsWith(cacheDir.absolutePath)) {
+            val file = File(item.url)
+            if (!file.exists()) {
+                HistoryStore(this@MainActivity).removeFromShelf(item.bookKey)
+                Toast.makeText(this@MainActivity, "本地文件已不在，已从书架移除", Toast.LENGTH_SHORT).show()
+                refreshList()
+                return
+            }
+            val intent = Intent(this@MainActivity, ReadingActivity::class.java).apply {
+                putExtra(ReadingActivity.EXTRA_LOCAL_FILE, item.url)
+                putExtra(ReadingActivity.EXTRA_LOCAL_TITLE, item.title)
+                putExtra(ReadingActivity.EXTRA_LOCAL_CHAPTER, item.localChapter)
+                // 续读定位所需的页码/百分比/阅读模式
+                putExtra("EXTRA_POSITION", item.position)
+                putExtra("EXTRA_TOTAL_PAGES", item.totalPages)
+                putExtra("EXTRA_SCROLL_MODE", item.scrollMode)
+            }
+            startActivity(intent)
+            return
+        }
         val intent = Intent(this@MainActivity, ReadingActivity::class.java).apply {
             putExtra("EXTRA_URL", item.url)
             putExtra("EXTRA_NEXT_CHAPTER", item.nextChapterUrl ?: "")
@@ -800,6 +988,10 @@ class MainActivity : AppCompatActivity() {
                         putExtra("EXTRA_CONTENT", result.content)
                         putExtra("EXTRA_URL", url)
                         putExtra("EXTRA_NEXT_CHAPTER", result.nextChapterUrl ?: "")
+                        // 关键：从 HTML <title> 中提取的书名作为 fallback，避免历史里把章节名当书名
+                        result.bookTitle?.takeIf { it.isNotBlank() }?.let {
+                            putExtra("EXTRA_BOOK_TITLE_FALLBACK", it)
+                        }
                     }
                     startActivity(intent)
                 }
@@ -827,6 +1019,94 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    /**
+     * 处理「打开方式 / 分享」传入的本地小说文件：解析后直接跳转到阅读页。
+     */
+    private fun handleIncomingOpenIntent(intent: Intent?) {
+        val action = intent?.action ?: return
+        if (action != Intent.ACTION_VIEW && action != Intent.ACTION_SEND) return
+
+        val uri: Uri? = when (action) {
+            Intent.ACTION_VIEW -> intent.data
+            else -> intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+        }
+        if (uri == null) return
+
+        // 防止配置变更（旋转屏幕）重建 Activity 时重复处理
+        intent.action = null
+        intent.data = null
+
+        val name = resolveDisplayName(uri)
+        loadingView.visibility = View.VISIBLE
+        lifecycleScope.launch {
+            when (val res = LocalBookLoader.load(this@MainActivity, uri, name)) {
+                is LocalBookLoader.Result.Ok -> {
+                    val store = HistoryStore(this@MainActivity)
+                    // 读取已存的续读进度（章节 + 页码/百分比），避免每次从文件管理器打开
+                    // 都重置回第 0 章第 0 页。本地书只存在于书架，按文件路径命中。
+                    val existing = store.getShelf().firstOrNull { it.bookKey == res.filePath }
+                    val resumeChapter = existing?.localChapter?.takeIf { it >= 0 } ?: 0
+                    val resumePosition = existing?.position ?: 0
+                    val resumeTotal = existing?.totalPages ?: 0
+                    val resumeScroll = existing?.scrollMode ?: false
+                    // 自动存入书架（按文件路径稳定标识，重复打开同一本小说去重置顶，不会重复）；
+                    // 若已存在则沿用既有进度置顶，而非清零。
+                    store.addToShelf(
+                        HistoryItem(
+                            title = res.title,
+                            url = res.filePath,
+                            bookKey = res.filePath,
+                            nextChapterUrl = null,
+                            position = resumePosition,
+                            totalPages = resumeTotal,
+                            chapterTitle = res.title,
+                            localChapter = resumeChapter,
+                            scrollMode = resumeScroll
+                        )
+                    )
+                    val target = Intent(this@MainActivity, ReadingActivity::class.java).apply {
+                        putExtra(ReadingActivity.EXTRA_LOCAL_FILE, res.filePath)
+                        putExtra(ReadingActivity.EXTRA_LOCAL_TITLE, res.title)
+                        // 续读：带上已保存的章节与页内位置，ReadingActivity 据此恢复阅读进度。
+                        putExtra(ReadingActivity.EXTRA_LOCAL_CHAPTER, resumeChapter)
+                        putExtra("EXTRA_POSITION", resumePosition)
+                        putExtra("EXTRA_TOTAL_PAGES", resumeTotal)
+                        putExtra("EXTRA_SCROLL_MODE", resumeScroll)
+                    }
+                    startActivity(target)
+                    loadingView.visibility = View.GONE
+                }
+                is LocalBookLoader.Result.Err -> {
+                    loadingView.visibility = View.GONE
+                    Toast.makeText(this@MainActivity, res.message, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun resolveDisplayName(uri: Uri): String {
+        var name = uri.lastPathSegment ?: ""
+        if (name.isBlank()) name = "本地小说"
+        if (uri.scheme == "content") {
+            try {
+                contentResolver.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { c ->
+                    if (c.moveToFirst()) {
+                        c.getString(0)?.takeIf { it.isNotBlank() }?.let { name = it }
+                    }
+                }
+            } catch (_: Exception) {
+                // 部分 content provider 不提供显示名，退回使用 lastPathSegment
+            }
+        }
+        return name
     }
 
     companion object {

@@ -11,3 +11,39 @@
 .cxx
 local.properties
 loading-showcase.html
+
+# Local tooling / build artifacts
+.gradle_home/
+.kotlin/
+.workbuddy/
+
+# Screenshots & mockups
+*.png
+*.jpg
+*.jpeg
+
+# Scratch scripts & logs
+*.log
+*.py
+*.ps1
+*.sh
+*.html
+*.txt
+
+# Throwaway experiment dirs / duplicate-path artifacts
+scheme_a/
+scheme_b/
+scheme_c/
+scheme_d/
+toc_out/
+toc_out2/
+toc_out3/
+toc_test_site/
+toc_test_site2/
+toc_test_site3/
+ui*.xml
+ui_dialog.xml
+ui_main.xml
+urlloader_orig.kt
+build_toc_test.js
+check_js_syntax.js

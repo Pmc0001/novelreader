@@ -1,22 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 书脊侧条：左侧深色书脊，右侧书封本体（由 coverColorFor 决定 fillColor） -->
+<!-- 书脊侧条：左侧深色书脊 + 顶部霓虹高光（coverColorFor 决定底层 fillColor） -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 左侧书脊（深色 6dp 宽） -->
+    <!-- 左侧书脊（深色 6dp 宽，增强立体感） -->
     <item android:left="0dp" android:right="56dp" android:top="0dp" android:bottom="0dp">
         <shape android:shape="rectangle">
-            <solid android:color="#1A000000" />
+            <solid android:color="#66000000" />
         </shape>
     </item>
 
-    <!-- 顶部金色高光带 -->
+    <!-- 顶部霓虹高光带 -->
     <item android:bottom="6dp">
         <shape android:shape="rectangle">
             <gradient
                 android:angle="270"
-                android:startColor="#33FFFFFF"
+                android:startColor="#55FFFFFF"
                 android:endColor="#00FFFFFF"
                 android:type="linear" />
+        </shape>
+    </item>
+
+    <!-- 右侧霓虹青描边光（强化封面边缘） -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/transparent" />
+            <corners android:radius="2dp" />
+            <stroke
+                android:width="0.5dp"
+                android:color="#557FFFD4" />
         </shape>
     </item>
 

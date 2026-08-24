@@ -9,7 +9,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
-import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -24,8 +24,8 @@ class UrlInputDialog : DialogFragment() {
     private lateinit var etUrl: EditText
     private lateinit var btnLoad: Button
     private lateinit var btnCancel: Button
-    private lateinit var btnPaste: ImageButton
-    private lateinit var btnCopy: ImageButton
+    private lateinit var btnPaste: LinearLayout
+    private lateinit var btnCopy: LinearLayout
     private lateinit var tvStatus: TextView
 
     private var presetUrl: String = ""

@@ -17,6 +17,13 @@ import android.widget.OverScroller
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class ReadingView @JvmOverloads constructor(
     context: Context,
@@ -33,6 +40,17 @@ class ReadingView @JvmOverloads constructor(
     var currentPage: Int = 0
         private set
     private var totalPages: Int = 0
+
+    // ===== 排版异步化（把 breakText 折行搬到后台线程，避免大章/整本单章在主线程卡顿） =====
+    private val layoutScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var layoutJob: Job? = null
+    // 一次排版完成后回调（由上层用于续读定位 / 收起 loading / 滚动模式拼接下一章）
+    var onLayoutReady: (() -> Unit)? = null
+    // applyChapter 的翻章方向：true=从末尾进入（上一章），排版完成后定位到末页/章底
+    var pendingStartAtEnd = false
+    // 标记「有待排版的内容（新章）」尚未完成：仅在内容排版完成时回调 onLayoutReady，
+    // 字号/行距/尺寸变化触发的重排版不会误触发续读定位 / 收起 loading。
+    private var contentLayoutPending = false
 
     val pageCount: Int
         get() = totalPages
@@ -56,7 +74,7 @@ class ReadingView @JvmOverloads constructor(
         set(value) {
             field = value
             textPaint.textSize = value * density
-            computeLayout()
+            relayout()
             invalidate()
         }
 
@@ -76,7 +94,7 @@ class ReadingView @JvmOverloads constructor(
     var lineSpacing: Float = 1.6f
         set(value) {
             field = value
-            computeLayout()
+            relayout()
             invalidate()
         }
 
@@ -85,7 +103,7 @@ class ReadingView @JvmOverloads constructor(
         set(value) {
             field = value
             textPaint.typeface = ReadingSettings.resolveTypeface(value)
-            computeLayout()
+            relayout()
             invalidate()
         }
 
@@ -107,7 +125,12 @@ class ReadingView @JvmOverloads constructor(
             drawOffset = 0f
             scrollY = 0f
             pendingScrollPercent = -1f
-            computeLayout()
+            // 切换模式时清理滚动模式专属的拼接状态
+            scrollNextLines = emptyList()
+            currentContentHeight = 0f
+            nextChapterOffset = Float.MAX_VALUE
+            flingRunning = false
+            relayout()
             invalidate()
         }
 
@@ -115,11 +138,16 @@ class ReadingView @JvmOverloads constructor(
     private var scrollY: Float = 0f            // 当前滚动偏移（向下为正）
     private var maxScroll: Float = 0f          // 最大可滚动距离
     private var scrollDragging = false
+    private var scrollMoved = false            // 本次触摸是否发生过超阈值的移动（用于区分点击与拖拽）
     private var pendingScrollPercent = -1f     // >=0 时 computeLayout 后定位到该比例
     private val overScroller = OverScroller(context)
 
     val scrollPercent: Float
-        get() = if (maxScroll > 0f) (scrollY / maxScroll).coerceIn(0f, 1f) else 1f
+        // 基于当前章自身可滚动高度（不含拼接的下一章），避免滑入下一章区域时进度超过 100%
+        get() {
+            val own = (currentContentHeight - height).coerceAtLeast(0f)
+            return if (own > 0f) (scrollY / own).coerceIn(0f, 1f) else 0f
+        }
 
     // 拖拽 / 翻页动画状态
     private var isDragging = false
@@ -136,6 +164,25 @@ class ReadingView @JvmOverloads constructor(
     private var transitionNextLines: List<LineEntry> = emptyList()
     // 上一章过渡内容（预取后用于翻章动画，取上一章的最后一页）
     private var transitionPrevLines: List<LineEntry> = emptyList()
+    // 翻章切换中标记：动画结束到新章排版完成前的间隙，继续显示 incoming 章首/尾屏，
+    // 避免异步 relayout 期间闪现旧章内容造成的"抖动"。
+    private var chapterSwapPending = false
+    private var chapterSwapIsNext = true
+
+    // ===== 滚动模式：到底无缝衔接下一章 =====
+    // 预取的下一章全文行（拼到当前章末尾连续渲染，滑过当前章末尾自然进入下一章）
+    private var scrollNextLines: List<LineEntry> = emptyList()
+    // 当前章正文高度（仅当前章，用于进度计算与边界判定）
+    private var currentContentHeight: Float = 0f
+    // 下一章首行 baseline 相对当前章首行 baseline 的偏移：scrollY 达到该值即进入下一章区域
+    private var nextChapterOffset: Float = Float.MAX_VALUE
+    // 无缝换章后需要恢复的 scrollY（onNextChapter 同步应用新章后会重置为 0，再据此恢复）
+    private var pendingSwapScrollY: Float = 0f
+    // fling 运行中标记，用于在 fling 结束时检测是否已滑入下一章区域
+    private var flingRunning: Boolean = false
+
+    private val chapterGapPx: Float
+        get() = 32f * density
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = textColor
@@ -163,7 +210,6 @@ class ReadingView @JvmOverloads constructor(
 
     fun setContent(text: String) {
         content = text
-        paragraphs = text.split("\n").filter { it.isNotBlank() }
         currentPage = 0
         drawPageBase = 0
         drawOffset = 0f
@@ -171,9 +217,28 @@ class ReadingView @JvmOverloads constructor(
         pendingScrollPercent = -1f
         settleAnimator?.cancel()
         isDragging = false
+        // 翻章切换间隙：保留过渡内容，待新章排版完成（relayout）后再清空，消除换章闪动
+        if (!chapterSwapPending) {
+            transitionNextLines = emptyList()
+            transitionPrevLines = emptyList()
+        }
+        // 新章应用：旧的拼接下一章已无效（即将由上层重新预取拼接）
+        scrollNextLines = emptyList()
+        nextChapterOffset = Float.MAX_VALUE
+        flingRunning = false
+        pendingStartPage = -1
+        pendingStartAtEnd = false
+        // 折行排版搬到后台线程；排版完成前保留上一章画面（避免白屏闪烁），
+        // 完成后再赋值 allLines 并分页（见 relayout）。
+        contentLayoutPending = true
+        relayout()
+    }
+
+    /** 翻章加载失败时用：取消换章过渡态，避免停留在 incoming 章首/尾屏（回到当前章画面）。 */
+    fun abortChapterSwap() {
+        chapterSwapPending = false
         transitionNextLines = emptyList()
         transitionPrevLines = emptyList()
-        computeLayout()
         invalidate()
     }
 
@@ -213,7 +278,7 @@ class ReadingView @JvmOverloads constructor(
         val newLines = mutableListOf<LineEntry>()
         for (paragraph in paras) {
             if (paragraph.isBlank()) continue
-            val wrapped = splitParagraphToLines(paragraph, availableWidth, firstLineIndent)
+            val wrapped = splitParagraphToLines(paragraph, availableWidth, firstLineIndent, textPaint)
             wrapped.forEachIndexed { index, line ->
                 newLines.add(LineEntry(line, index == 0))
             }
@@ -234,7 +299,7 @@ class ReadingView @JvmOverloads constructor(
         val newLines = mutableListOf<LineEntry>()
         for (paragraph in paras) {
             if (paragraph.isBlank()) continue
-            val wrapped = splitParagraphToLines(paragraph, availableWidth, firstLineIndent)
+            val wrapped = splitParagraphToLines(paragraph, availableWidth, firstLineIndent, textPaint)
             wrapped.forEachIndexed { index, line ->
                 newLines.add(LineEntry(line, index == 0))
             }
@@ -243,6 +308,45 @@ class ReadingView @JvmOverloads constructor(
         val lastPage = (newLines.size - 1) / linesPerPage
         val startLine = lastPage * linesPerPage
         transitionPrevLines = newLines.subList(startLine, newLines.size)
+    }
+
+    /**
+     * 滚动模式专用：把预取的下一章全文折行后拼到当前章末尾，
+     * 使 maxScroll 延伸到下一章末尾，用户滑过当前章末尾即可连续进入下一章内容。
+     * 仅在滚动模式下生效；翻页模式调用此方法无效。
+     */
+    fun setScrollNextChapter(text: String) {
+        if (!scrollMode || width <= 0 || height <= 0) return
+        scrollNextLines = layoutLines(text.split("\n").filter { it.isNotBlank() }, textPaint)
+        computeLayout()
+        invalidate()
+    }
+
+    /**
+     * 滚动模式无感知换章：当 fling/拖拽结束且视口已进入预取的下一章区域时，
+     * 把下一章切换为当前章，并将 scrollY 折算到新章对应位置，使屏内像素保持不变。
+     *
+     * 切换时机：scrollY >= nextChapterOffset（视口顶已越过下一章首行）
+     *         或 scrollY >= maxScroll（已滑到拼接内容末尾，如下一章短于一屏）。
+     */
+    private fun maybeSwapToNextChapter() {
+        if (scrollNextLines.isEmpty()) return
+        if (scrollY < nextChapterOffset && scrollY < maxScroll) return
+        // 在下一章内容空间中的偏移：scrollY - nextChapterOffset
+        val offsetInNext = (scrollY - nextChapterOffset).coerceAtLeast(0f)
+        overScroller.forceFinished(true)
+        flingRunning = false
+        // 即将成为当前章，先清空拼接（setContent 也会清，这里提前清避免边界判定错乱）
+        scrollNextLines = emptyList()
+        nextChapterOffset = Float.MAX_VALUE
+        pendingSwapScrollY = offsetInNext
+        // onNextChapter 会同步应用缓存中的下一章（loadChapter cache hit → setContent，scrollY 被重置为 0）
+        onNextChapter?.invoke()
+        // setContent 已重置 scrollY=0；恢复到无缝折算位置（限制在新当前章自身可滚动范围内）
+        val own = (currentContentHeight - height).coerceAtLeast(0f)
+        scrollY = pendingSwapScrollY.coerceIn(0f, own)
+        invalidate()
+        reportScrollProgress()
     }
 
     fun commitCurrentPage() {
@@ -263,13 +367,16 @@ class ReadingView @JvmOverloads constructor(
 
     fun setInitialPage(page: Int) {
         pendingStartPage = page
-        if (width > 0 && height > 0) computeLayout()
+        // 排版尚未就绪（allLines 为空）时只记录意图，交由 relayout 完成后的 computeLayout 落实，
+        // 避免在未排版时就把页码误算为 0。
+        if (width > 0 && height > 0 && allLines.isNotEmpty()) computeLayout()
     }
 
     // 滚动模式下按百分比定位（用于恢复阅读位置）
     fun setInitialScrollPercent(p: Float) {
         pendingScrollPercent = p.coerceIn(0f, 1f)
-        if (width > 0 && height > 0) {
+        // 排版尚未就绪时只记录意图，交由 relayout 完成后的 computeLayout 落实。
+        if (width > 0 && height > 0 && allLines.isNotEmpty()) {
             scrollY = (maxScroll * pendingScrollPercent).coerceIn(0f, maxScroll)
             pendingScrollPercent = -1f
             invalidate()
@@ -277,42 +384,113 @@ class ReadingView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * 把「拆段 + 折行排版」搬到后台线程执行，完成后切主线程赋值 [allLines] 并分页。
+     * 折行用的临时 Paint 与主线程 [textPaint] 保持完全一致的字号/字体/字距，保证换行结果一致。
+     * 多次连续调用（快速翻章）会取消上一次未完成的排版，只保留最新一章。
+     */
+    private fun relayout() {
+        if (content.isEmpty() || width <= 0 || height <= 0) return
+        layoutJob?.cancel()
+        val raw = content
+        val fs = fontSize
+        val ff = fontFamily
+        val densityPt = resources.displayMetrics.density
+        val w = width
+        // 仅当本次排版源于「内容变化（新章）」时才在完成后回调 onLayoutReady
+        val fireReady = contentLayoutPending
+        layoutJob = layoutScope.launch {
+            val paras = raw.split("\n").filter { it.isNotBlank() }
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                textSize = fs * densityPt
+                typeface = ReadingSettings.resolveTypeface(ff)
+                letterSpacing = 0.02f
+            }
+            // 异常安全：折行（breakText）偶发失败也不能让 onLayoutReady 永不触发，
+            // 否则上层 showLoading(false) / 续读定位永远不执行 → loading 卡死被误认成「加载失败」。
+            val lines = runCatching { layoutLines(paras, paint) }.getOrElse { emptyList() }
+            withContext(Dispatchers.Main) {
+                // 期间已发生更新的 setContent（content 变了），本次结果作废
+                if (content != raw) return@withContext
+                allLines = lines
+                paragraphs = paras
+                computeLayout()
+                invalidate()
+                if (chapterSwapPending) {
+                    // 新章已排版完成，过渡内容与新章首/尾页内容一致，至此无缝接管，消除抖动
+                    chapterSwapPending = false
+                    transitionNextLines = emptyList()
+                    transitionPrevLines = emptyList()
+                    invalidate()
+                }
+                if (fireReady) {
+                    contentLayoutPending = false
+                    onLayoutReady?.invoke()
+                }
+            }
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        layoutScope.cancel()
+        super.onDetachedFromWindow()
+    }
+
     private fun computeLayout() {
         if (width <= 0 || height <= 0) return
 
         val lineHeight = fontSize * lineSpacing * density
-        val paddingH = 24f * density
-        val firstLineIndent = fontSize * density * FIRST_LINE_INDENT
-        val availableWidth = width - paddingH * 2
-
-        val newLines = mutableListOf<LineEntry>()
-        for (paragraph in paragraphs) {
-            if (paragraph.isBlank()) continue
-            val wrapped = splitParagraphToLines(paragraph, availableWidth, firstLineIndent)
-            wrapped.forEachIndexed { index, line ->
-                newLines.add(LineEntry(line, index == 0))
-            }
-        }
-
-        allLines = newLines
+        // 注意：allLines 已由后台 relayout() 计算完成，这里只做「分页」（极廉价），不再折行。
 
         if (scrollMode) {
-            // 滚动模式：计算内容总高度与最大滚动距离
+            // 滚动模式：计算当前章内容高度与最大滚动距离
             val paddingV = SCREEN_PADDING_V_DP * density
             val paragraphGap = fontSize * density * PARAGRAPH_SPACING
+            val firstAscent = fontSize * density
+            val descent = fontSize * density * 0.3f
             // 第一行 baseline = paddingTop + paddingV + fontSize
-            var y = paddingTop + paddingV + fontSize * density
+            val top = paddingTop + paddingV + firstAscent
+            var y = top
+            var currentLastBaseline = top
             allLines.forEachIndexed { index, entry ->
                 if (entry.isParagraphStart && index > 0) y += paragraphGap
+                currentLastBaseline = y
                 y += lineHeight
             }
-            // 内容总高 = 最后一行 baseline + descent - 第一行 top + paddingV 底
-            val contentHeight = y - lineHeight + fontSize * density * 0.3f + paddingV + paddingBottom
-            maxScroll = maxOf(0f, contentHeight - height)
+            // 当前章内容总高（仅当前章，用于进度与边界判定）
+            currentContentHeight = currentLastBaseline + descent + paddingV + paddingBottom
+
+            if (scrollNextLines.isEmpty()) {
+                // 未拼接下一章：常规单章可滚动距离
+                nextChapterOffset = Float.MAX_VALUE
+                maxScroll = (currentContentHeight - height).coerceAtLeast(0f)
+            } else {
+                // 拼接下一章：y 当前 = currentLastBaseline + lineHeight；补章节间距后为下一章首行 baseline
+                y += chapterGapPx
+                val nextFirstBaseline = y
+                // 进入下一章区域所需的 scrollY（视口顶到达下一章首行位置）
+                nextChapterOffset = nextFirstBaseline - top
+                var ny = nextFirstBaseline
+                var nextLastBaseline = nextFirstBaseline
+                scrollNextLines.forEachIndexed { index, entry ->
+                    if (entry.isParagraphStart && index > 0) ny += paragraphGap
+                    nextLastBaseline = ny
+                    ny += lineHeight
+                }
+                val combinedHeight = nextLastBaseline + descent + paddingV + paddingBottom
+                maxScroll = (combinedHeight - height).coerceAtLeast(0f)
+            }
+
             scrollY = scrollY.coerceIn(0f, maxScroll)
             if (pendingScrollPercent >= 0f) {
-                scrollY = (maxScroll * pendingScrollPercent).coerceIn(0f, maxScroll)
+                // 续读定位以当前章自身高度为基准（不含拼接的下一章）
+                val own = (currentContentHeight - height).coerceAtLeast(0f)
+                scrollY = (own * pendingScrollPercent).coerceIn(0f, maxScroll)
                 pendingScrollPercent = -1f
+            } else if (pendingStartAtEnd) {
+                // 上一章从末尾进入：定位到章底
+                scrollY = maxScroll
+                pendingStartAtEnd = false
             }
             totalPages = 1
             reportScrollProgress()
@@ -332,12 +510,41 @@ class ReadingView @JvmOverloads constructor(
             drawPageBase = currentPage
             drawOffset = 0f
             pendingStartPage = -1
+        } else if (pendingStartAtEnd) {
+            currentPage = (totalPages - 1).coerceAtLeast(0)
+            drawPageBase = currentPage
+            drawOffset = 0f
+            pendingStartAtEnd = false
         }
 
         if (currentPage >= totalPages) currentPage = totalPages - 1
         if (drawPageBase >= totalPages) drawPageBase = totalPages - 1
 
         onPageChanged?.invoke(currentPage, totalPages)
+    }
+
+    /**
+     * 把段落列表按当前字号/可用宽度折行成 [LineEntry]。
+     * computeLayout 与 setScrollNextChapter 共用，确保当前章与拼接章的折行规则一致。
+     */
+    /**
+     * 把段落列表按当前字号/可用宽度折行成 [LineEntry]。
+     * @param paint 用于测量的画笔；主线程路径传 [textPaint]，后台排版路径传同参数的临时 Paint。
+     * computeLayout 与 setScrollNextChapter 共用，确保当前章与拼接章的折行规则一致。
+     */
+    private fun layoutLines(paragraphs: List<String>, paint: Paint): List<LineEntry> {
+        val paddingH = 24f * density
+        val firstLineIndent = fontSize * density * FIRST_LINE_INDENT
+        val availableWidth = width - paddingH * 2
+        val lines = mutableListOf<LineEntry>()
+        for (paragraph in paragraphs) {
+            if (paragraph.isBlank()) continue
+            val wrapped = splitParagraphToLines(paragraph, availableWidth, firstLineIndent, paint)
+            wrapped.forEachIndexed { index, line ->
+                lines.add(LineEntry(line, index == 0))
+            }
+        }
+        return lines
     }
 
     private fun reportScrollProgress() {
@@ -351,7 +558,12 @@ class ReadingView @JvmOverloads constructor(
         return if (startLine < allLines.size) allLines.subList(startLine, endLine) else emptyList()
     }
 
-    private fun splitParagraphToLines(paragraph: String, availableWidth: Float, firstLineIndent: Float): List<String> {
+    private fun splitParagraphToLines(
+        paragraph: String,
+        availableWidth: Float,
+        firstLineIndent: Float,
+        paint: Paint
+    ): List<String> {
         val lines = mutableListOf<String>()
         var remaining = paragraph
         var isFirstLine = true
@@ -363,19 +575,19 @@ class ReadingView @JvmOverloads constructor(
                 lines.add(remaining)
                 break
             }
-            val measuredWidth = textPaint.measureText(remaining)
+            val measuredWidth = paint.measureText(remaining)
             if (measuredWidth <= lineAvailableWidth) {
                 lines.add(remaining)
                 break
             }
 
-            var breakPoint = textPaint.breakText(remaining, true, lineAvailableWidth, null)
+            var breakPoint = paint.breakText(remaining, true, lineAvailableWidth, null)
             if (breakPoint > 0 && breakPoint < remaining.length) {
                 while (breakPoint > 0 && remaining[breakPoint - 1] != ' ') {
                     breakPoint--
                 }
                 if (breakPoint == 0) {
-                    breakPoint = textPaint.breakText(remaining, true, lineAvailableWidth, null)
+                    breakPoint = paint.breakText(remaining, true, lineAvailableWidth, null)
                 }
             }
 
@@ -389,7 +601,7 @@ class ReadingView @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        computeLayout()
+        relayout()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -424,13 +636,23 @@ class ReadingView @JvmOverloads constructor(
                 }
             }
         } else {
-            drawPageAt(canvas, linesForPage(currentPage), 0f)
+            if (chapterSwapPending) {
+                // 换章间隙：继续显示 incoming 章首/尾屏，待 relayout 完成后由正常分页接管
+                val swapLines = if (chapterSwapIsNext) transitionNextLines else transitionPrevLines
+                if (swapLines.isNotEmpty()) {
+                    drawPageAt(canvas, swapLines, 0f)
+                } else {
+                    drawPageAt(canvas, linesForPage(currentPage), 0f)
+                }
+            } else {
+                drawPageAt(canvas, linesForPage(currentPage), 0f)
+            }
         }
 
         drawTime(canvas)
     }
 
-    // 滚动模式：连续绘制可见行，并支持顶/底边界"拉出上一章/下一章"提示
+    // 滚动模式：连续绘制可见行；若已预取下一章则拼到末尾连续渲染，实现到底无缝衔接
     private fun drawScroll(canvas: Canvas) {
         val lineHeight = fontSize * lineSpacing * density
         val paragraphGap = fontSize * density * PARAGRAPH_SPACING
@@ -439,7 +661,6 @@ class ReadingView @JvmOverloads constructor(
         val firstLineIndent = fontSize * density * FIRST_LINE_INDENT
         val firstAscent = fontSize * density
         val top = paddingTop + paddingV + firstAscent  // 第一行 baseline
-        val bottomLimit = height - paddingBottom
 
         canvas.save()
         canvas.translate(0f, -scrollY)
@@ -457,12 +678,30 @@ class ReadingView @JvmOverloads constructor(
             }
             y += lineHeight
         }
+        // 拼接预取的下一章全文：y 此时为当前章末行 baseline + lineHeight，补章节间距后继续
+        if (scrollNextLines.isNotEmpty()) {
+            y += chapterGapPx
+            scrollNextLines.forEachIndexed { index, entry ->
+                if (entry.isParagraphStart && index > 0) y += paragraphGap
+                val baseline = y
+                val lineTop = baseline - firstAscent
+                val lineBottom = lineTop + lineHeight
+                if (lineBottom > scrollY && lineTop < scrollY + height) {
+                    val indent = if (entry.isParagraphStart) firstLineIndent else 0f
+                    if (entry.text.isNotEmpty()) {
+                        canvas.drawText(entry.text, paddingH + indent, baseline, textPaint)
+                    }
+                }
+                y += lineHeight
+            }
+        }
         canvas.restore()
 
         // 边界拉出提示（在主画布固定位置绘制）
+        // 已拼接下一章时，底部不再提示"下滑看下一章"（直接连续滑入即可）
         if (scrollY < -4f) {
             canvas.drawText("上滑看上一章", width / 2f, 40f * density, hintPaint)
-        } else if (scrollY > maxScroll + 4f) {
+        } else if (scrollY > maxScroll + 4f && scrollNextLines.isEmpty()) {
             canvas.drawText("下滑看下一章", width / 2f, height - 24f * density, hintPaint)
         }
     }
@@ -575,10 +814,15 @@ class ReadingView @JvmOverloads constructor(
     }
 
     override fun computeScroll() {
-        if (scrollMode && overScroller.computeScrollOffset()) {
+        if (!scrollMode) return
+        if (overScroller.computeScrollOffset()) {
             scrollY = overScroller.currY.toFloat().coerceIn(0f, maxScroll)
             invalidate()
             reportScrollProgress()
+        } else if (flingRunning) {
+            // fling 结束：若已滑入预取的下一章区域，则无感知地把下一章切换为当前章
+            flingRunning = false
+            maybeSwapToNextChapter()
         }
     }
 
@@ -587,7 +831,12 @@ class ReadingView @JvmOverloads constructor(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 overScroller.forceFinished(true)
+                // 若上一次 fling 被手指中断且已滑入下一章区域，先结算无感知换章
+                maybeSwapToNextChapter()
+                flingRunning = false
                 scrollDragging = true
+                scrollMoved = false
+                downX = event.x
                 downY = event.y
                 lastTouchX = event.y
                 velocityTracker?.clear()
@@ -601,6 +850,14 @@ class ReadingView @JvmOverloads constructor(
                 if (!scrollDragging) return true
                 val dy = event.y - lastTouchX
                 lastTouchX = event.y
+                // 位移超过 slop 才算"拖拽"，否则视为点击（松开时切换栏显隐）
+                val slop = 12f * density
+                if (!scrollMoved &&
+                    (kotlin.math.abs(event.x - downX) > slop ||
+                     kotlin.math.abs(event.y - downY) > slop)
+                ) {
+                    scrollMoved = true
+                }
                 val os = 80f * density
                 scrollY = (scrollY - dy).coerceIn(-os, maxScroll + os)
                 invalidate()
@@ -616,6 +873,12 @@ class ReadingView @JvmOverloads constructor(
                 velocityTracker = null
                 scrollDragging = false
 
+                // 纯点击（未发生超阈值移动）→ 切换顶/底栏显隐，与翻页模式中心点击一致
+                if (!scrollMoved) {
+                    onTapCenter?.invoke()
+                    return true
+                }
+
                 val os = 80f * density
                 // 顶部拉出超过阈值 → 上一章
                 if (scrollY <= -os * 0.6f) {
@@ -625,18 +888,21 @@ class ReadingView @JvmOverloads constructor(
                     return true
                 }
                 // 底部拉出超过阈值 → 下一章
-                if (scrollY >= maxScroll + os * 0.6f) {
+                // 已拼接预取的下一章时，底部边界即下一章末尾，不在此处触发翻章；
+                // 由 fling 结束时的 maybeSwapToNextChapter 在屏内无感知切换。
+                if (scrollNextLines.isEmpty() && scrollY >= maxScroll + os * 0.6f) {
                     scrollY = maxScroll
                     invalidate()
                     onNextChapter?.invoke()
                     return true
                 }
-                // 否则惯性滑动
+                // 否则惯性滑动（maxScroll 已含拼接的下一章，可顺滑滑入）
                 val startY = scrollY.coerceIn(0f, maxScroll).toInt()
                 overScroller.fling(
                     0, startY, 0, (-vy).toInt(),
                     0, 0, 0, maxScroll.toInt()
                 )
+                flingRunning = true
                 invalidate()
                 return true
             }
@@ -800,8 +1066,10 @@ class ReadingView @JvmOverloads constructor(
                 override fun onAnimationEnd(animation: Animator) {
                     drawOffset = 0f
                     isDragging = false
-                    transitionNextLines = emptyList()
-                    transitionPrevLines = emptyList()
+                    // 不立即清空过渡内容：保留 incoming 章首/尾屏，直到新章 relayout 完成（见 relayout），
+                    // 期间由 onDraw 的 chapterSwapPending 分支继续绘制，消除换章瞬间的闪动/抖动。
+                    chapterSwapPending = true
+                    chapterSwapIsNext = isNext
                     invalidate()
                     if (isNext) onNextChapter?.invoke() else onPrevChapter?.invoke()
                 }

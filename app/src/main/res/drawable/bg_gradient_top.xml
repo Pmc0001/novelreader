@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 顶栏下方渐变过渡：深墨绿 → 透明 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
     <gradient
         android:angle="270"
-        android:startColor="#BB2D2016"
-        android:endColor="#002D2016" />
+        android:startColor="#880D2018"
+        android:endColor="#000D2018" />
 </shape>

@@ -5,9 +5,19 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.front" android:required="false" />
+
+    <!-- 旧版 Health Connect 独立 App（Android 13-）；Android 14+ 为系统模块，此 queries 无害 -->
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
+
+    <!-- connect-client:1.1.0 要求 minSdk 26，本 App minSdk 24；HC 代码路径仅在 API 26+ 触发，
+         故用 overrideLibrary 跳过合并报错；低版本设备（<API 26）本页提示不支持 -->
+    <uses-sdk tools:overrideLibrary="androidx.health.connect.client" />
 
     <application
         android:allowBackup="true"
@@ -22,11 +32,55 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:theme="@style/Theme.NovelReader.Main"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- 打开方式：本地小说文件（.txt / .epub / .umd） -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="content" android:mimeType="text/plain" />
+                <data android:scheme="file" android:mimeType="text/plain" />
+                <data android:scheme="content" android:mimeType="application/epub+zip" />
+                <data android:scheme="file" android:mimeType="application/epub+zip" />
+                <data android:scheme="content" android:mimeType="application/x-epub" />
+                <data android:scheme="file" android:mimeType="application/x-epub" />
+                <data android:scheme="content" android:mimeType="application/octet-stream" />
+                <data android:scheme="file" android:mimeType="application/octet-stream" />
+            </intent-filter>
+
+            <!-- 文件管理器以未知 MIME（仅扩展名）分享时按扩展名匹配（file:// 场景） -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:scheme="file" android:host="*" android:mimeType="*/*" android:pathPattern=".*\\.txt" />
+                <data android:scheme="file" android:host="*" android:mimeType="*/*" android:pathPattern=".*\\.TXT" />
+                <data android:scheme="file" android:host="*" android:mimeType="*/*" android:pathPattern=".*\\.epub" />
+                <data android:scheme="file" android:host="*" android:mimeType="*/*" android:pathPattern=".*\\.EPUB" />
+                <data android:scheme="file" android:host="*" android:mimeType="*/*" android:pathPattern=".*\\.umd" />
+                <data android:scheme="file" android:host="*" android:mimeType="*/*" android:pathPattern=".*\\.UMD" />
+            </intent-filter>
+
+            <!-- 通过“分享”把单个文件发送给本应用 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="application/x-epub" />
+                <data android:mimeType="application/octet-stream" />
             </intent-filter>
         </activity>
 
@@ -50,6 +104,12 @@
 
         <activity
             android:name=".StatsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.NovelReader"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".StepsActivity"
             android:exported="false"
             android:theme="@style/Theme.NovelReader"
             android:windowSoftInputMode="adjustResize" />

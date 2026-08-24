@@ -15,7 +15,11 @@ enum class BackgroundTheme(
     val textColor: Int,
     val secondaryTextColor: Int,
     val previewColor: Int,
-    val category: ThemeCategory
+    val category: ThemeCategory,
+    /** 顶栏/底栏背景主色（比正文背景暗一度的同色系，保证白色文字可读） */
+    val barBackgroundColor: Int,
+    /** 栏内按钮、图标、章节导航等强调色 */
+    val barAccentColor: Int
 ) {
     WHITE(
         id = ReadingSettings.THEME_WHITE,
@@ -24,7 +28,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#454545"),
         secondaryTextColor = Color.parseColor("#999999"),
         previewColor = Color.WHITE,
-        category = ThemeCategory.COOL
+        category = ThemeCategory.COOL,
+        barBackgroundColor = Color.parseColor("#2A2A2A"),
+        barAccentColor = Color.parseColor("#CDCDCD")
     ),
     WARM_YELLOW(
         id = ReadingSettings.THEME_WARM_YELLOW,
@@ -33,7 +39,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#4A4035"),
         secondaryTextColor = Color.parseColor("#8B7355"),
         previewColor = Color.parseColor("#F5E6C8"),
-        category = ThemeCategory.WARM
+        category = ThemeCategory.WARM,
+        barBackgroundColor = Color.parseColor("#3A2818"),
+        barAccentColor = Color.parseColor("#D8C6A2")
     ),
     CREAM(
         id = ReadingSettings.THEME_CREAM,
@@ -42,7 +50,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#4A4540"),
         secondaryTextColor = Color.parseColor("#8B7E6A"),
         previewColor = Color.parseColor("#F0E4D0"),
-        category = ThemeCategory.WARM
+        category = ThemeCategory.WARM,
+        barBackgroundColor = Color.parseColor("#3A2D1F"),
+        barAccentColor = Color.parseColor("#D2C3AB")
     ),
     GREEN(
         id = ReadingSettings.THEME_GREEN,
@@ -51,7 +61,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#3A4A3A"),
         secondaryTextColor = Color.parseColor("#6A8A6A"),
         previewColor = Color.parseColor("#CCE8CF"),
-        category = ThemeCategory.COOL
+        category = ThemeCategory.COOL,
+        barBackgroundColor = Color.parseColor("#1F3325"),
+        barAccentColor = Color.parseColor("#A9C8AC")
     ),
     BLUE(
         id = ReadingSettings.THEME_BLUE,
@@ -60,7 +72,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#3A4050"),
         secondaryTextColor = Color.parseColor("#6A7A90"),
         previewColor = Color.parseColor("#D6E4F0"),
-        category = ThemeCategory.COOL
+        category = ThemeCategory.COOL,
+        barBackgroundColor = Color.parseColor("#1F2D40"),
+        barAccentColor = Color.parseColor("#B0C3D2")
     ),
     DARK(
         id = ReadingSettings.THEME_DARK,
@@ -69,7 +83,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#AAAAAA"),
         secondaryTextColor = Color.parseColor("#666666"),
         previewColor = Color.parseColor("#1A1A2E"),
-        category = ThemeCategory.NIGHT
+        category = ThemeCategory.NIGHT,
+        barBackgroundColor = Color.parseColor("#0A0A1F"),
+        barAccentColor = Color.parseColor("#6A7A9A")
     ),
     WARM_WHITE(
         id = 6,
@@ -78,7 +94,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#4A4538"),
         secondaryTextColor = Color.parseColor("#9C8E7A"),
         previewColor = Color.parseColor("#FFF6E9"),
-        category = ThemeCategory.WARM
+        category = ThemeCategory.WARM,
+        barBackgroundColor = Color.parseColor("#3D3528"),
+        barAccentColor = Color.parseColor("#EAD7BB")
     ),
     APRICOT(
         id = 7,
@@ -87,7 +105,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#4A4035"),
         secondaryTextColor = Color.parseColor("#9C8466"),
         previewColor = Color.parseColor("#FBE3C9"),
-        category = ThemeCategory.WARM
+        category = ThemeCategory.WARM,
+        barBackgroundColor = Color.parseColor("#3D2510"),
+        barAccentColor = Color.parseColor("#E0C2A1")
     ),
     PEACH(
         id = 8,
@@ -96,7 +116,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#4A3A30"),
         secondaryTextColor = Color.parseColor("#A07A66"),
         previewColor = Color.parseColor("#FAD9C0"),
-        category = ThemeCategory.WARM
+        category = ThemeCategory.WARM,
+        barBackgroundColor = Color.parseColor("#3D1F0F"),
+        barAccentColor = Color.parseColor("#DDB699")
     ),
     ROSE(
         id = 9,
@@ -105,7 +127,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#4A3535"),
         secondaryTextColor = Color.parseColor("#A07070"),
         previewColor = Color.parseColor("#F7D9D9"),
-        category = ThemeCategory.WARM
+        category = ThemeCategory.WARM,
+        barBackgroundColor = Color.parseColor("#3D1818"),
+        barAccentColor = Color.parseColor("#DCB1B1")
     ),
     SEPIA(
         id = 10,
@@ -114,7 +138,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#4A4030"),
         secondaryTextColor = Color.parseColor("#8B7355"),
         previewColor = Color.parseColor("#F4E8D1"),
-        category = ThemeCategory.WARM
+        category = ThemeCategory.WARM,
+        barBackgroundColor = Color.parseColor("#3D2F1A"),
+        barAccentColor = Color.parseColor("#D7C8AA")
     ),
     LAVENDER(
         id = 11,
@@ -123,7 +149,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#3D3850"),
         secondaryTextColor = Color.parseColor("#7A6F98"),
         previewColor = Color.parseColor("#E8E0F0"),
-        category = ThemeCategory.COOL
+        category = ThemeCategory.COOL,
+        barBackgroundColor = Color.parseColor("#2A1F38"),
+        barAccentColor = Color.parseColor("#C6BBD2")
     ),
     MINT(
         id = 12,
@@ -132,7 +160,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#304A3A"),
         secondaryTextColor = Color.parseColor("#5A8A7A"),
         previewColor = Color.parseColor("#D5EDDF"),
-        category = ThemeCategory.COOL
+        category = ThemeCategory.COOL,
+        barBackgroundColor = Color.parseColor("#1F3329"),
+        barAccentColor = Color.parseColor("#B0CEBD")
     ),
     PARCHMENT(
         id = 13,
@@ -141,7 +171,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#4A4030"),
         secondaryTextColor = Color.parseColor("#8B7E62"),
         previewColor = Color.parseColor("#EDE0C8"),
-        category = ThemeCategory.WARM
+        category = ThemeCategory.WARM,
+        barBackgroundColor = Color.parseColor("#3D3319"),
+        barAccentColor = Color.parseColor("#CEBFA4")
     ),
     GRAY(
         id = 14,
@@ -150,7 +182,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#454545"),
         secondaryTextColor = Color.parseColor("#888888"),
         previewColor = Color.parseColor("#F0F0F0"),
-        category = ThemeCategory.COOL
+        category = ThemeCategory.COOL,
+        barBackgroundColor = Color.parseColor("#2A2A2A"),
+        barAccentColor = Color.parseColor("#C2C2C2")
     ),
     WARM_PINK(
         id = 15,
@@ -159,7 +193,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#4A3535"),
         secondaryTextColor = Color.parseColor("#907070"),
         previewColor = Color.parseColor("#FDE8E8"),
-        category = ThemeCategory.WARM
+        category = ThemeCategory.WARM,
+        barBackgroundColor = Color.parseColor("#3D1A1A"),
+        barAccentColor = Color.parseColor("#E8BFBF")
     ),
     SANDSTONE(
         id = ReadingSettings.THEME_SANDSTONE,
@@ -168,7 +204,9 @@ enum class BackgroundTheme(
         textColor = Color.parseColor("#4A453A"),
         secondaryTextColor = Color.parseColor("#8A7E6A"),
         previewColor = Color.parseColor("#DDD0BC"),
-        category = ThemeCategory.WARM
+        category = ThemeCategory.WARM,
+        barBackgroundColor = Color.parseColor("#2D2519"),
+        barAccentColor = Color.parseColor("#BBAE9B")
     );
 
     companion object {

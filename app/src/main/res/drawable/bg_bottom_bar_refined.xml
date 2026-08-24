@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 底栏：深墨绿渐变，全屏宽度 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="90"
+                android:startColor="#C01A3828"
+                android:centerColor="#D4153025"
+                android:endColor="#E80D2018"
+                android:type="linear" />
+        </shape>
+    </item>
+    <!-- 底部柔和高光 -->
+    <item android:height="1dp" android:gravity="bottom">
+        <shape android:shape="rectangle">
+            <solid android:color="#1AFFFFFF" />
+        </shape>
+    </item>
+</layer-list>

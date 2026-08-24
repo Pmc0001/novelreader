@@ -13,11 +13,13 @@
     <color name="textSecondary">#FF9A8878</color>
     <color name="textOnPrimary">#FFFFFFFF</color>
 
-    <!-- 通用暖色文字/强调（MainActivity 列表样式复用） -->
-    <color name="ink">#FF3D2E22</color>        <!-- 深暖棕，主文字 -->
-    <color name="inkSoft">#FF9A8878</color>    <!-- 柔和暖棕，次级文字 -->
-    <color name="inkFaint">#FFC4B6A6</color>   <!-- 更淡暖棕，辅助/占位文字 -->
-    <color name="golden">#FFC9A86C</color>      <!-- 暖金强调色 -->
+    <!-- 极光深空配色（MainActivity 专用） -->
+    <color name="ink">#FFF5F7FA</color>        <!-- 极光白，主文字 -->
+    <color name="inkSoft">#FFB8C5D6</color>    <!-- 柔光银，次级文字 -->
+    <color name="inkFaint">#FF7A8AA8</color>   <!-- 雾蓝灰，辅助/占位文字 -->
+    <color name="golden">#FF7FFFD4</color>     <!-- 霓虹青，强调色 -->
+    <color name="auroraPurple">#FFB388FF</color> <!-- 霓虹紫 -->
+    <color name="auroraPink">#FFE040FB</color>   <!-- 极光粉 -->
 
     <color name="divider">#FFE8DDD0</color>
     <color name="error">#FFD32F2F</color>

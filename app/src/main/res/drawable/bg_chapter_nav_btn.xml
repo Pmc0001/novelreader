@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 章节导航按钮：薄荷绿玻璃胶囊 -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#1A7FFFD4">
+    <item>
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="#30FFFFFF" />
+                    <stroke
+                        android:width="1dp"
+                        android:color="#997FFFD4" />
+                    <corners android:radius="17dp" />
+                </shape>
+            </item>
+            <item android:height="1dp" android:top="1dp" android:gravity="top|center_horizontal" android:left="10dp" android:right="10dp">
+                <shape android:shape="rectangle">
+                    <solid android:color="#33FFFFFF" />
+                    <corners android:radius="0.5dp" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+</ripple>

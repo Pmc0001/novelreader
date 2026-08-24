@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 方案B 暖色纸张页面背景：米白→浅棕垂直渐变 + 双暖色光晕（左上棕 / 右下蜜桃） -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 底层：暖色纸张垂直渐变 -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:startColor="#FFF7F2E9"
+                android:centerColor="#FFEFE3D0"
+                android:endColor="#FFE6D8C2"
+                android:type="linear" />
+        </shape>
+    </item>
+
+    <!-- 左上：暖棕径向光晕 -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="radial"
+                android:gradientRadius="620"
+                android:centerX="0.15"
+                android:centerY="0.05"
+                android:startColor="#33D9B98C"
+                android:endColor="#00D9B98C" />
+        </shape>
+    </item>
+
+    <!-- 右下：暖蜜桃径向光晕 -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="radial"
+                android:gradientRadius="560"
+                android:centerX="0.92"
+                android:centerY="0.85"
+                android:startColor="#33E8C9A0"
+                android:endColor="#00E8C9A0" />
+        </shape>
+    </item>
+
+    <!-- 顶部柔和高光带（强化沉浸式状态栏区域的纸张质感） -->
+    <item android:height="2dp" android:gravity="top">
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="0"
+                android:startColor="#33D4B896"
+                android:centerColor="#55C9A77C"
+                android:endColor="#33D4B896"
+                android:type="linear" />
+        </shape>
+    </item>
+
+</layer-list>

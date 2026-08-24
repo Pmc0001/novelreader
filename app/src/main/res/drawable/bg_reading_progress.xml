@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 阅读进度条：薄荷绿 → 青绿渐变 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 轨道 -->
+    <item android:id="@android:id/background">
+        <shape android:shape="rectangle">
+            <solid android:color="#287FFFD4" />
+            <corners android:radius="1.5dp" />
+        </shape>
+    </item>
+    <!-- 填充 -->
+    <item android:id="@android:id/progress">
+        <clip>
+            <shape android:shape="rectangle">
+                <gradient
+                    android:angle="0"
+                    android:startColor="#FF7FFFD4"
+                    android:endColor="#FF40E0A0" />
+                <corners android:radius="1.5dp" />
+            </shape>
+        </clip>
+    </item>
+</layer-list>

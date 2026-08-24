@@ -13,7 +13,11 @@ data class HistoryItem(
     val position: Int,
     val totalPages: Int,
     // 记录保存进度时所用的阅读模式，续读时据此正确解释 position（翻页=页码 / 滚动=百分比）
-    val scrollMode: Boolean = false
+    val scrollMode: Boolean = false,
+    // 当前所在章节标题，用于历史/书架列表展示"读到哪一章"（否则列表只显示书名，换章后看起来"没更新"）
+    val chapterTitle: String = "",
+    // 本地书续读的章节索引（本地书没有在线 URL，用本地缓存文件 + 章节下标续读）；网络书恒为 -1
+    val localChapter: Int = -1
 ) {
     companion object {
         // 从章节 URL 提取小说标识：取文件所在的目录路径，同一本小说不同章节共享
@@ -46,7 +50,9 @@ class HistoryStore(context: Context) {
                         nextChapterUrl = if (!o.isNull("next")) o.getString("next") else null,
                         position = o.optInt("position", 0),
                         totalPages = o.optInt("total", 0),
-                        scrollMode = o.optBoolean("scroll", false)
+                        scrollMode = o.optBoolean("scroll", false),
+                        chapterTitle = o.optString("chapter", ""),
+                        localChapter = o.optInt("lc", -1)
                     )
                 )
             }
@@ -99,7 +105,9 @@ class HistoryStore(context: Context) {
                         nextChapterUrl = if (!o.isNull("next")) o.getString("next") else null,
                         position = o.optInt("position", 0),
                         totalPages = o.optInt("total", 0),
-                        scrollMode = o.optBoolean("scroll", false)
+                        scrollMode = o.optBoolean("scroll", false),
+                        chapterTitle = o.optString("chapter", ""),
+                        localChapter = o.optInt("lc", -1)
                     )
                 )
             }
@@ -127,11 +135,13 @@ class HistoryStore(context: Context) {
         getShelf().any { it.bookKey == bookKey }
 
     // 保持书架顺序（按加入时间），仅更新进度，不置顶
-    fun updateShelfProgress(bookKey: String, position: Int, totalPages: Int, nextChapterUrl: String?, scrollMode: Boolean = false) {
+    fun updateShelfProgress(bookKey: String, position: Int, totalPages: Int, nextChapterUrl: String?, scrollMode: Boolean = false, chapterTitle: String = "", localChapter: Int = -1) {
         val list = getShelf().toMutableList()
         val idx = list.indexOfFirst { it.bookKey == bookKey }
         if (idx < 0) return
-        list[idx] = list[idx].copy(position = position, totalPages = totalPages, nextChapterUrl = nextChapterUrl, scrollMode = scrollMode)
+        // 本地书续读章节索引：传入有效下标才覆盖，否则保留既有值（避免把已存的章节清成 -1）。
+        val lc = if (localChapter >= 0) localChapter else list[idx].localChapter
+        list[idx] = list[idx].copy(position = position, totalPages = totalPages, nextChapterUrl = nextChapterUrl, scrollMode = scrollMode, chapterTitle = chapterTitle, localChapter = lc)
         saveShelf(list)
     }
 
@@ -151,6 +161,8 @@ class HistoryStore(context: Context) {
                     put("position", item.position)
                     put("total", item.totalPages)
                     put("scroll", item.scrollMode)
+                    put("chapter", item.chapterTitle)
+                    put("lc", item.localChapter)
                 }
                 arr.put(o)
             }
@@ -172,6 +184,8 @@ class HistoryStore(context: Context) {
                     put("position", item.position)
                     put("total", item.totalPages)
                     put("scroll", item.scrollMode)
+                    put("chapter", item.chapterTitle)
+                    put("lc", item.localChapter)
                 }
                 arr.put(o)
             }

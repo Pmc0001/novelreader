@@ -37,10 +37,6 @@ class ReadingSettings(context: Context) {
         get() = prefs.getBoolean(KEY_GESTURE_ENABLED, false)
         set(value) = prefs.edit().putBoolean(KEY_GESTURE_ENABLED, value).apply()
 
-    var gestureSensitivity: Int
-        get() = prefs.getInt(KEY_GESTURE_SENSITIVITY, SENSITIVITY_MEDIUM)
-        set(value) = prefs.edit().putInt(KEY_GESTURE_SENSITIVITY, value).apply()
-
     // 滚动阅读模式：true=连续滚动，false=翻页（默认翻页）
     var scrollMode: Boolean
         get() = prefs.getBoolean(KEY_SCROLL_MODE, false)
@@ -51,6 +47,11 @@ class ReadingSettings(context: Context) {
         get() = prefs.getInt(KEY_FONT_FAMILY, FONT_FAMILY_DEFAULT)
         set(value) = prefs.edit().putInt(KEY_FONT_FAMILY, value).apply()
 
+    // 自定义栏背景颜色：非 -1 时覆盖主题默认 barBackgroundColor；-1 表示跟随主题
+    var customBarColor: Int
+        get() = prefs.getInt(KEY_CUSTOM_BAR_COLOR, -1)
+        set(value) = prefs.edit().putInt(KEY_CUSTOM_BAR_COLOR, value).apply()
+
     companion object {
         const val KEY_FONT_SIZE = "font_size"
         const val KEY_BACKGROUND_THEME = "background_theme"
@@ -59,18 +60,36 @@ class ReadingSettings(context: Context) {
         const val KEY_BRIGHTNESS = "brightness"
         const val KEY_LAST_POSITION = "last_position"
         const val KEY_GESTURE_ENABLED = "gesture_enabled"
-        const val KEY_GESTURE_SENSITIVITY = "gesture_sensitivity"
         const val KEY_SCROLL_MODE = "scroll_mode"
         const val KEY_FONT_FAMILY = "font_family"
-
-        const val SENSITIVITY_LOW = 0
-        const val SENSITIVITY_MEDIUM = 1
-        const val SENSITIVITY_HIGH = 2
+        const val KEY_CUSTOM_BAR_COLOR = "custom_bar_color"
 
         const val FONT_FAMILY_DEFAULT = 0
         const val FONT_FAMILY_SANS = 1
         const val FONT_FAMILY_SERIF = 2
         const val FONT_FAMILY_MONO = 3
+        const val FONT_FAMILY_SANS_LIGHT = 4
+        const val FONT_FAMILY_SANS_MEDIUM = 5
+        const val FONT_FAMILY_SANS_CONDENSED = 6
+        const val FONT_FAMILY_SERIF_MONO = 7
+        const val FONT_FAMILY_CURSIVE = 8
+        const val FONT_FAMILY_CASUAL = 9
+
+        // 字体选项：id + 显示名 + Typeface，供设置页动态生成按钮与阅读页复用
+        data class FontOption(val id: Int, val name: String, val typeface: Typeface)
+
+        val FONT_OPTIONS = listOf(
+            FontOption(FONT_FAMILY_DEFAULT, "默认", Typeface.DEFAULT),
+            FontOption(FONT_FAMILY_SANS, "黑体", Typeface.SANS_SERIF),
+            FontOption(FONT_FAMILY_SERIF, "宋体", Typeface.SERIF),
+            FontOption(FONT_FAMILY_MONO, "等宽", Typeface.MONOSPACE),
+            FontOption(FONT_FAMILY_SANS_LIGHT, "细体", Typeface.create("sans-serif-light", Typeface.NORMAL)),
+            FontOption(FONT_FAMILY_SANS_MEDIUM, "中粗", Typeface.create("sans-serif-medium", Typeface.NORMAL)),
+            FontOption(FONT_FAMILY_SANS_CONDENSED, "窄体", Typeface.create("sans-serif-condensed", Typeface.NORMAL)),
+            FontOption(FONT_FAMILY_SERIF_MONO, "衬等宽", Typeface.create("serif-monospace", Typeface.NORMAL)),
+            FontOption(FONT_FAMILY_CURSIVE, "手写", Typeface.create("cursive", Typeface.NORMAL)),
+            FontOption(FONT_FAMILY_CASUAL, "休闲", Typeface.create("casual", Typeface.NORMAL))
+        )
 
         const val THEME_WHITE = 0
         const val THEME_WARM_YELLOW = 1
@@ -89,6 +108,12 @@ class ReadingSettings(context: Context) {
             FONT_FAMILY_SANS -> Typeface.SANS_SERIF
             FONT_FAMILY_SERIF -> Typeface.SERIF
             FONT_FAMILY_MONO -> Typeface.MONOSPACE
+            FONT_FAMILY_SANS_LIGHT -> Typeface.create("sans-serif-light", Typeface.NORMAL)
+            FONT_FAMILY_SANS_MEDIUM -> Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            FONT_FAMILY_SANS_CONDENSED -> Typeface.create("sans-serif-condensed", Typeface.NORMAL)
+            FONT_FAMILY_SERIF_MONO -> Typeface.create("serif-monospace", Typeface.NORMAL)
+            FONT_FAMILY_CURSIVE -> Typeface.create("cursive", Typeface.NORMAL)
+            FONT_FAMILY_CASUAL -> Typeface.create("casual", Typeface.NORMAL)
             else -> Typeface.DEFAULT
         }
     }

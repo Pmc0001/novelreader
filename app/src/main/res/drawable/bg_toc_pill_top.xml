@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 顶栏"目录"按钮：薄荷绿描边胶囊 -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#1A7FFFD4">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#20FFFFFF" />
+            <stroke
+                android:width="0.9dp"
+                android:color="#997FFFD4" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+</ripple>

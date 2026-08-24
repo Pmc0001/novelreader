@@ -125,6 +125,12 @@ class SearchActivity : AppCompatActivity() {
                 renderResults(rows)
             }
         }
+        // 协程被取消（如切后台）时也要收起加载圈，避免「一直在转圈」残留
+        searchJob?.invokeOnCompletion {
+            if (it is kotlinx.coroutines.CancellationException) {
+                loadingView.visibility = View.GONE
+            }
+        }
     }
 
     private fun renderResults(list: List<SearchRow>) {
