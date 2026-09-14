@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item
+        android:id="@+id/menu_home"
+        android:title="返回搜索首页" />
+
+    <item
+        android:id="@+id/menu_open_in_reader"
+        android:title="在阅读页打开当前页" />
+
+    <item
+        android:id="@+id/menu_download_manager"
+        android:title="文件下载管理" />
+
+    <item
+        android:id="@+id/menu_refresh"
+        android:title="刷新" />
+
+    <item
+        android:id="@+id/menu_copy_url"
+        android:title="复制当前链接" />
+
+</menu>

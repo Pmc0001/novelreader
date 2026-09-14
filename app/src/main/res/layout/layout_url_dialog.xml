@@ -5,146 +5,148 @@
     android:layout_height="wrap_content"
     android:orientation="vertical"
     android:background="@drawable/bg_dialog"
-    android:paddingHorizontal="24dp"
-    android:paddingTop="28dp"
+    android:paddingStart="22dp"
+    android:paddingTop="24dp"
+    android:paddingEnd="22dp"
     android:paddingBottom="20dp">
 
+    <!-- 标题图标 -->
+    <FrameLayout
+        android:layout_width="46dp"
+        android:layout_height="46dp"
+        android:layout_gravity="center_horizontal"
+        android:background="@drawable/bg_icon_badge">
+
+        <ImageView
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_url"
+            app:tint="@color/colorPrimary"
+            android:importantForAccessibility="no" />
+    </FrameLayout>
+
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="center"
         android:text="加载在线小说"
-        android:textSize="19sp"
-        android:textStyle="bold"
         android:textColor="@color/textPrimary"
-        android:gravity="center"
-        android:layout_marginBottom="6dp" />
+        android:textSize="17sp"
+        android:textStyle="bold" />
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="输入小说页面的URL地址"
-        android:textSize="13sp"
-        android:textColor="@color/textSecondary"
+        android:layout_marginTop="4dp"
         android:gravity="center"
-        android:layout_marginBottom="20dp" />
+        android:text="粘贴小说页面链接，直接开始阅读"
+        android:textColor="@color/textSecondary"
+        android:textSize="12sp" />
 
-    <EditText
-        android:id="@+id/et_url"
+    <!-- 链接输入框：右侧内嵌「粘贴 | 复制」快捷操作 -->
+    <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:hint="https://example.com/novel/chapter1"
-        android:inputType="textUri"
-        android:singleLine="true"
-        android:paddingStart="14dp"
-        android:paddingEnd="14dp"
-        android:background="@drawable/bg_input_field"
-        android:textSize="14sp"
-        android:textColor="@color/textPrimary"
-        android:textColorHint="@color/textSecondary"
-        android:layout_marginBottom="10dp" />
+        android:layout_height="52dp"
+        android:layout_marginTop="18dp"
+        android:background="@drawable/bg_input_field">
 
-    <LinearLayout
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="end"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        android:layout_marginBottom="16dp">
+        <EditText
+            android:id="@+id/et_url"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@null"
+            android:hint="https:// 或 www. 开头的链接"
+            android:imeOptions="actionGo"
+            android:inputType="textUri"
+            android:maxLines="1"
+            android:paddingStart="14dp"
+            android:paddingEnd="104dp"
+            android:textColor="@color/textPrimary"
+            android:textColorHint="@color/textSecondary"
+            android:textSize="14sp"
+            android:importantForAutofill="no" />
 
-        <!-- 粘贴：图标 + 文字标签，确保不会跟"复制"混淆 -->
         <LinearLayout
-            android:id="@+id/btn_paste"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
+            android:layout_height="match_parent"
+            android:layout_gravity="end"
             android:gravity="center_vertical"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:padding="6dp"
-            android:focusable="true"
-            android:clickable="true">
-
-            <ImageView
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:src="@drawable/ic_paste"
-                android:contentDescription="粘贴"
-                app:tint="@color/textSecondary" />
+            android:orientation="horizontal"
+            android:paddingEnd="4dp">
 
             <TextView
+                android:id="@+id/btn_paste"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:background="@drawable/bg_ripple_light"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
                 android:text="粘贴"
+                android:textColor="@color/colorPrimary"
                 android:textSize="13sp"
-                android:textColor="@color/textSecondary"
-                android:layout_marginStart="4dp" />
-        </LinearLayout>
+                android:textStyle="bold" />
 
-        <!-- 复制：图标 + 文字标签 -->
-        <LinearLayout
-            android:id="@+id/btn_copy"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:padding="6dp"
-            android:focusable="true"
-            android:clickable="true"
-            android:layout_marginStart="12dp">
-
-            <ImageView
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:src="@drawable/ic_copy"
-                android:contentDescription="复制"
-                app:tint="@color/textSecondary" />
+            <View
+                android:layout_width="1dp"
+                android:layout_height="16dp"
+                android:background="@color/divider" />
 
             <TextView
+                android:id="@+id/btn_copy"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:background="@drawable/bg_ripple_light"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
                 android:text="复制"
-                android:textSize="13sp"
                 android:textColor="@color/textSecondary"
-                android:layout_marginStart="4dp" />
+                android:textSize="13sp" />
         </LinearLayout>
-    </LinearLayout>
+    </FrameLayout>
 
     <TextView
         android:id="@+id/tv_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
         android:textColor="@color/error"
         android:textSize="13sp"
-        android:visibility="gone"
-        android:layout_marginBottom="4dp" />
+        android:visibility="gone" />
 
+    <!-- 底部操作：取消（描边胶囊） + 加载（品牌实心） -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="end">
+        android:layout_marginTop="18dp"
+        android:orientation="horizontal">
 
-        <Button
+        <TextView
             android:id="@+id/btn_cancel"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
             android:layout_width="0dp"
+            android:layout_height="48dp"
             android:layout_weight="1"
-            android:layout_height="44dp"
+            android:layout_marginEnd="10dp"
+            android:background="@drawable/bg_chip_off"
+            android:gravity="center"
             android:text="取消"
             android:textColor="@color/textSecondary"
-            android:layout_marginEnd="8dp" />
+            android:textSize="15sp" />
 
-        <Button
+        <TextView
             android:id="@+id/btn_load"
             android:layout_width="0dp"
+            android:layout_height="48dp"
             android:layout_weight="1"
-            android:layout_height="44dp"
-            android:text="加载"
             android:background="@drawable/bg_button_primary"
+            android:gravity="center"
+            android:text="加载"
             android:textColor="@color/textOnPrimary"
             android:textSize="15sp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp" />
+            android:textStyle="bold" />
     </LinearLayout>
 
 </LinearLayout>

@@ -266,7 +266,7 @@ class MainActivity : AppCompatActivity() {
         }
         val loadUrlLabel = TextView(this).apply {
             text = "粘贴链接"
-            textSize = 14f
+            textSize = 13f
             setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textPrimary))
             typeface = Typeface.DEFAULT_BOLD
             setPadding((6 * density).toInt(), 0, 0, 0)
@@ -305,7 +305,7 @@ class MainActivity : AppCompatActivity() {
         }
         val statsLabel = TextView(this).apply {
             text = "阅读统计"
-            textSize = 14f
+            textSize = 13f
             setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textPrimary))
             typeface = Typeface.DEFAULT_BOLD
             setPadding((6 * density).toInt(), 0, 0, 0)
@@ -313,7 +313,12 @@ class MainActivity : AppCompatActivity() {
         statsCard.addView(statsIcon)
         statsCard.addView(statsLabel)
 
-        val stepsCard = LinearLayout(this).apply {
+        secondaryRow.addView(loadUrlCard)
+        secondaryRow.addView(statsCard)
+        cardLayout.addView(secondaryRow)
+
+        // 文件下载入口
+        val downloadsCard = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
@@ -329,11 +334,11 @@ class MainActivity : AppCompatActivity() {
                 (14 * density).toInt()
             )
             setOnClickListener {
-                startActivity(Intent(this@MainActivity, StepsActivity::class.java))
+                startActivity(Intent(this@MainActivity, DownloadsActivity::class.java))
             }
         }
-        val stepsIcon = ImageView(this).apply {
-            setImageResource(R.drawable.ic_steps)
+        val downloadsIcon = ImageView(this).apply {
+            setImageResource(R.drawable.ic_download)
             layoutParams = LinearLayout.LayoutParams(
                 (20 * density).toInt(),
                 (20 * density).toInt()
@@ -341,20 +346,25 @@ class MainActivity : AppCompatActivity() {
             scaleType = ImageView.ScaleType.FIT_CENTER
             setColorFilter(ContextCompat.getColor(this@MainActivity, R.color.colorPrimary))
         }
-        val stepsLabel = TextView(this).apply {
-            text = "今日步数"
+        val downloadsLabel = TextView(this).apply {
+            text = "文件下载"
             textSize = 14f
             setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textPrimary))
             typeface = Typeface.DEFAULT_BOLD
             setPadding((6 * density).toInt(), 0, 0, 0)
         }
-        stepsCard.addView(stepsIcon)
-        stepsCard.addView(stepsLabel)
+        downloadsCard.addView(downloadsIcon)
+        downloadsCard.addView(downloadsLabel)
 
-        secondaryRow.addView(loadUrlCard)
-        secondaryRow.addView(statsCard)
-        secondaryRow.addView(stepsCard)
-        cardLayout.addView(secondaryRow)
+        val secondaryRow2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = (10 * density).toInt() }
+        }
+        secondaryRow2.addView(downloadsCard)
+        cardLayout.addView(secondaryRow2)
 
         // 设置按钮
         val settingsCard = LinearLayout(this).apply {

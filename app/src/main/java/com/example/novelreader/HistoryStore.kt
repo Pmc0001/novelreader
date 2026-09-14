@@ -64,8 +64,9 @@ class HistoryStore(context: Context) {
 
     fun addOrUpdate(item: HistoryItem, maxItems: Int = 10) {
         val list = getHistory().toMutableList()
-        // 同一本小说只保留一项：按 bookKey 去重
-        val idx = list.indexOfFirst { it.bookKey == item.bookKey }
+        // 同一本小说只保留一项：按 bookKey 去重；本地书 url 即为唯一 bookKey，
+        // 同时按 url 匹配，兼容旧数据中 bookKey 与 url 不一致的情形（自动去重合并）。
+        val idx = list.indexOfFirst { it.bookKey == item.bookKey || it.url == item.bookKey }
         if (idx >= 0) list.removeAt(idx)
         list.add(0, item)
         while (list.size > maxItems) list.removeAt(list.size - 1)
@@ -79,7 +80,7 @@ class HistoryStore(context: Context) {
     }
 
     fun clear() {
-        prefs.edit().remove(KEY_HISTORY).apply()
+        prefs.edit().remove(KEY_HISTORY).commit()
     }
 
     /** 在历史或书架里按 url/bookKey 命中一项，优先历史（最近阅读的有最新进度）。*/
@@ -119,7 +120,7 @@ class HistoryStore(context: Context) {
 
     fun addToShelf(item: HistoryItem) {
         val list = getShelf().toMutableList()
-        val idx = list.indexOfFirst { it.bookKey == item.bookKey }
+        val idx = list.indexOfFirst { it.bookKey == item.bookKey || it.url == item.bookKey }
         if (idx >= 0) list.removeAt(idx)
         list.add(0, item)
         saveShelf(list)
@@ -127,17 +128,17 @@ class HistoryStore(context: Context) {
 
     fun removeFromShelf(bookKey: String) {
         val list = getShelf().toMutableList()
-        list.removeAll { it.bookKey == bookKey }
+        list.removeAll { it.bookKey == bookKey || it.url == bookKey }
         saveShelf(list)
     }
 
     fun isInShelf(bookKey: String): Boolean =
-        getShelf().any { it.bookKey == bookKey }
+        getShelf().any { it.bookKey == bookKey || it.url == bookKey }
 
     // 保持书架顺序（按加入时间），仅更新进度，不置顶
     fun updateShelfProgress(bookKey: String, position: Int, totalPages: Int, nextChapterUrl: String?, scrollMode: Boolean = false, chapterTitle: String = "", localChapter: Int = -1) {
         val list = getShelf().toMutableList()
-        val idx = list.indexOfFirst { it.bookKey == bookKey }
+        val idx = list.indexOfFirst { it.bookKey == bookKey || it.url == bookKey }
         if (idx < 0) return
         // 本地书续读章节索引：传入有效下标才覆盖，否则保留既有值（避免把已存的章节清成 -1）。
         val lc = if (localChapter >= 0) localChapter else list[idx].localChapter
@@ -146,7 +147,7 @@ class HistoryStore(context: Context) {
     }
 
     fun clearShelf() {
-        prefs.edit().remove(KEY_SHELF).apply()
+        prefs.edit().remove(KEY_SHELF).commit()
     }
 
     private fun saveShelf(list: List<HistoryItem>) {
@@ -166,7 +167,9 @@ class HistoryStore(context: Context) {
                 }
                 arr.put(o)
             }
-            prefs.edit().putString(KEY_SHELF, arr.toString()).apply()
+            // 用 commit() 而非 apply()：退出 app（进程被杀）时 apply 的异步写入可能来不及落盘，
+            // 导致上次阅读位置丢失；commit 同步落盘可保证 onPause 保存的进度一定被持久化。
+            prefs.edit().putString(KEY_SHELF, arr.toString()).commit()
         } catch (e: Exception) {
             // 序列化失败则忽略
         }
@@ -189,7 +192,9 @@ class HistoryStore(context: Context) {
                 }
                 arr.put(o)
             }
-            prefs.edit().putString(KEY_HISTORY, arr.toString()).apply()
+            // 用 commit() 而非 apply()：退出 app（进程被杀）时 apply 的异步写入可能来不及落盘，
+            // 导致上次阅读位置丢失；commit 同步落盘可保证 onPause 保存的进度一定被持久化。
+            prefs.edit().putString(KEY_HISTORY, arr.toString()).commit()
         } catch (e: Exception) {
             // 序列化失败则忽略
         }

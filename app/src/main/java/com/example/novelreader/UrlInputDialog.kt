@@ -5,11 +5,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
-import android.widget.Button
+import android.view.inputmethod.EditorInfo
 import android.widget.EditText
-import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -22,10 +23,10 @@ class UrlInputDialog : DialogFragment() {
     private var onCancel: (() -> Unit)? = null
 
     private lateinit var etUrl: EditText
-    private lateinit var btnLoad: Button
-    private lateinit var btnCancel: Button
-    private lateinit var btnPaste: LinearLayout
-    private lateinit var btnCopy: LinearLayout
+    private lateinit var btnLoad: TextView
+    private lateinit var btnCancel: TextView
+    private lateinit var btnPaste: TextView
+    private lateinit var btnCopy: TextView
     private lateinit var tvStatus: TextView
 
     private var presetUrl: String = ""
@@ -46,6 +47,26 @@ class UrlInputDialog : DialogFragment() {
         btnLoad = view.findViewById(R.id.btn_load)
         btnCancel = view.findViewById(R.id.btn_cancel)
         tvStatus = view.findViewById(R.id.tv_status)
+
+        // 键盘「前往」直接加载；重新输入时清除错误提示
+        etUrl.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_GO) {
+                btnLoad.performClick()
+                true
+            } else {
+                false
+            }
+        }
+        etUrl.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                if (!s.isNullOrBlank() && tvStatus.visibility == View.VISIBLE) {
+                    tvStatus.visibility = View.GONE
+                }
+            }
+
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+        })
 
         if (presetUrl.isNotBlank()) {
             etUrl.setText(presetUrl)

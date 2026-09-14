@@ -5,19 +5,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <!-- Android 9 及以下系统下载文件到公共"下载"目录需要（DownloadManager 代写） -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"
+        tools:ignore="ScopedStorage" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.front" android:required="false" />
-
-    <!-- 旧版 Health Connect 独立 App（Android 13-）；Android 14+ 为系统模块，此 queries 无害 -->
-    <queries>
-        <package android:name="com.google.android.apps.healthdata" />
-    </queries>
-
-    <!-- connect-client:1.1.0 要求 minSdk 26，本 App minSdk 24；HC 代码路径仅在 API 26+ 触发，
-         故用 overrideLibrary 跳过合并报错；低版本设备（<API 26）本页提示不支持 -->
-    <uses-sdk tools:overrideLibrary="androidx.health.connect.client" />
 
     <application
         android:allowBackup="true"
@@ -103,13 +98,13 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
-            android:name=".StatsActivity"
+            android:name=".DownloadsActivity"
             android:exported="false"
             android:theme="@style/Theme.NovelReader"
             android:windowSoftInputMode="adjustResize" />
 
         <activity
-            android:name=".StepsActivity"
+            android:name=".StatsActivity"
             android:exported="false"
             android:theme="@style/Theme.NovelReader"
             android:windowSoftInputMode="adjustResize" />

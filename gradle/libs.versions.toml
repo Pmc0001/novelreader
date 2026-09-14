@@ -12,7 +12,6 @@ okhttp = "4.12.0"
 jsoup = "1.17.2"
 camerax = "1.4.1"
 mediapipe = "0.10.14"
-healthConnect = "1.1.0"
 desugar = "2.0.4"
 
 [libraries]
@@ -31,7 +30,6 @@ camerax-camera2 = { group = "androidx.camera", name = "camera-camera2", version.
 camerax-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
 camerax-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 mediapipe-tasks-vision = { group = "com.google.mediapipe", name = "tasks-vision", version.ref = "mediapipe" }
-androidx-health-connect-client = { group = "androidx.health.connect", name = "connect-client", version.ref = "healthConnect" }
 androidx-desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugar" }
 
 [plugins]

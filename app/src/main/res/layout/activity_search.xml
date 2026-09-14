@@ -1,95 +1,282 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/bgPage"
-    android:fitsSystemWindows="true">
+    android:orientation="vertical"
+    android:background="@color/bgPage">
 
+    <!-- 顶部栏：返回 / 原生搜索输入胶囊 / 菜单（跟随页面米白底色，状态栏图标用深色） -->
     <LinearLayout
+        android:id="@+id/top_bar"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical">
+        android:layout_height="wrap_content"
+        android:minHeight="60dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@color/bgPage"
+        android:paddingStart="4dp"
+        android:paddingTop="4dp"
+        android:paddingEnd="4dp"
+        android:paddingBottom="6dp">
 
-        <!-- 搜索栏 -->
+        <ImageButton
+            android:id="@+id/btn_search_back"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/bg_ripple_light"
+            android:contentDescription="返回"
+            android:src="@drawable/ic_back"
+            android:padding="10dp"
+            app:tint="@color/textPrimary" />
+
+        <!-- 搜索输入胶囊：不依赖必应自带搜索框，直接在本页输入 -->
         <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:id="@+id/search_box"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="8dp"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:padding="12dp"
-            android:background="@color/bgCard"
-            android:elevation="4dp">
+            android:background="@drawable/bg_search_box"
+            android:paddingStart="12dp"
+            android:paddingEnd="4dp">
 
             <ImageView
-                android:id="@+id/btn_search_back"
-                android:layout_width="32dp"
-                android:layout_height="32dp"
-                android:src="@drawable/ic_back"
-                android:padding="4dp"
-                android:layout_marginEnd="8dp" />
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:src="@drawable/ic_search"
+                app:tint="@color/textSecondary"
+                android:importantForAccessibility="no" />
 
             <EditText
-                android:id="@+id/et_search"
+                android:id="@+id/et_query"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:hint="输入书名或作者搜索"
-                android:imeOptions="actionSearch"
-                android:inputType="text"
-                android:maxLines="1"
-                android:background="@drawable/bg_input_field"
-                android:paddingStart="14dp"
-                android:paddingEnd="14dp"
-                android:paddingTop="10dp"
-                android:paddingBottom="10dp"
-                android:textSize="15sp"
-                android:textColor="@color/textPrimary"
-                android:textColorHint="@color/textSecondary" />
-
-            <Button
-                android:id="@+id/btn_search"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="搜索"
                 android:layout_marginStart="8dp"
-                android:background="@drawable/bg_button_primary"
-                android:textColor="@color/textOnPrimary"
+                android:background="@null"
+                android:hint="输入书名 / 作者名"
+                android:textColorHint="@color/textSecondary"
+                android:textColor="@color/textPrimary"
                 android:textSize="15sp"
-                android:paddingStart="18dp"
-                android:paddingEnd="18dp" />
+                android:inputType="text"
+                android:imeOptions="actionSearch"
+                android:maxLines="1"
+                android:importantForAutofill="no" />
+
+            <ImageButton
+                android:id="@+id/btn_clear"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="@drawable/bg_ripple_light"
+                android:contentDescription="清空输入"
+                android:src="@drawable/ic_close"
+                android:padding="8dp"
+                android:visibility="gone"
+                app:tint="@color/textSecondary" />
         </LinearLayout>
 
-        <TextView
-            android:id="@+id/search_status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:visibility="gone"
-            android:gravity="center"
-            android:textSize="14sp"
-            android:textColor="@color/textSecondary"
-            android:padding="24dp" />
+        <ImageButton
+            android:id="@+id/btn_menu"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/bg_ripple_light"
+            android:contentDescription="菜单"
+            android:src="@drawable/ic_menu_more"
+            android:padding="10dp"
+            app:tint="@color/textPrimary" />
+    </LinearLayout>
 
+    <!-- 头部与内容区之间的细分割线（浏览网页时区隔米白顶栏与白色页面） -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#14000000" />
+
+    <!-- 网页加载进度（细条，品牌色点缀） -->
+    <ProgressBar
+        android:id="@+id/progress_bar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="3dp"
+        android:max="100"
+        android:progress="0"
+        android:progressTint="@color/colorAccent"
+        android:visibility="gone" />
+
+    <!-- 内容区：原生首页引导面板 + 搜索/浏览 WebView -->
+    <FrameLayout
+        android:id="@+id/content_container"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <!-- 原生首页：品牌引导 + 搜索历史 + 常用网站（替代必应首页大图） -->
         <ScrollView
+            android:id="@+id/home_panel"
             android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:fillViewport="true">
+            android:layout_height="match_parent"
+            android:fillViewport="true"
+            android:overScrollMode="never"
+            android:scrollbars="none">
 
             <LinearLayout
-                android:id="@+id/search_results"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:paddingTop="8dp"
-                android:paddingBottom="16dp" />
+                android:paddingStart="20dp"
+                android:paddingTop="24dp"
+                android:paddingEnd="20dp"
+                android:paddingBottom="24dp">
+
+                <ImageView
+                    android:layout_width="96dp"
+                    android:layout_height="96dp"
+                    android:layout_gravity="center_horizontal"
+                    android:contentDescription="搜索小说"
+                    android:src="@drawable/ic_empty_openbook" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
+                    android:layout_marginTop="10dp"
+                    android:text="搜索在线小说"
+                    android:textColor="@color/textPrimary"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center"
+                    android:lineSpacingExtra="3dp"
+                    android:text="输入书名或作者，用搜索引擎找在线资源\n找到后点右上角菜单「在阅读页打开」"
+                    android:textColor="@color/textSecondary"
+                    android:textSize="13sp" />
+
+                <!-- 最近搜索 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="26dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="最近搜索"
+                        android:textColor="@color/textPrimary"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <Space
+                        android:layout_width="0dp"
+                        android:layout_height="1dp"
+                        android:layout_weight="1" />
+
+                    <TextView
+                        android:id="@+id/btn_clear_history"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_ripple_light"
+                        android:paddingStart="8dp"
+                        android:paddingTop="4dp"
+                        android:paddingEnd="8dp"
+                        android:paddingBottom="4dp"
+                        android:text="清空"
+                        android:textColor="@color/textSecondary"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <HorizontalScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:overScrollMode="never"
+                    android:scrollbars="none">
+
+                    <LinearLayout
+                        android:id="@+id/history_row"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal" />
+                </HorizontalScrollView>
+
+                <TextView
+                    android:id="@+id/tv_history_empty"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="暂无搜索记录，搜过的书会出现在这里"
+                    android:textColor="@color/textSecondary"
+                    android:textSize="13sp" />
+
+                <!-- 常用网站 -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="26dp"
+                    android:text="常用网站"
+                    android:textColor="@color/textPrimary"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <HorizontalScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:overScrollMode="never"
+                    android:scrollbars="none">
+
+                    <LinearLayout
+                        android:id="@+id/sites_row"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal" />
+                </HorizontalScrollView>
+
+                <!-- 小贴士卡片 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="26dp"
+                    android:background="@drawable/bg_card"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="小提示"
+                        android:textColor="@color/colorPrimary"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="3dp"
+                        android:text="· 搜索时优先用书名全称，结果更准\n· 进入小说目录页后，菜单里「在阅读页打开」可自动解析目录开始阅读"
+                        android:textColor="@color/textSecondary"
+                        android:textSize="13sp" />
+                </LinearLayout>
+            </LinearLayout>
         </ScrollView>
-    </LinearLayout>
 
-    <com.example.novelreader.PremiumLoadingView
-        android:id="@+id/search_loading"
-        android:layout_width="120dp"
-        android:layout_height="120dp"
-        android:layout_gravity="center"
-        android:visibility="gone" />
+        <!-- 搜索结果 / 站内浏览 WebView -->
+        <WebView
+            android:id="@+id/web_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+    </FrameLayout>
 
-</FrameLayout>
+</LinearLayout>

@@ -5,14 +5,12 @@ plugins {
 android {
     namespace = "com.example.novelreader"
     compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
+        version = release(36)
     }
 
     defaultConfig {
         applicationId = "com.example.novelreader"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -50,7 +48,6 @@ dependencies {
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.view)
     implementation(libs.mediapipe.tasks.vision)
-    implementation(libs.androidx.health.connect.client)
     coreLibraryDesugaring(libs.androidx.desugar.jdk.libs)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)

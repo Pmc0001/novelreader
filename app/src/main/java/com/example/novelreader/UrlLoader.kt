@@ -12,23 +12,110 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import okhttp3.Cache
+import okhttp3.ConnectionPool
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.jsoup.Jsoup
+import java.io.File
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 class UrlLoader(private val context: Context) {
 
-    // 轻量 HTTP 通道（Jsoup），用于搜索/章节/目录的快速尝试，避免每次都起 WebView。
-    private val LIGHT_FETCH_TIMEOUT_MS = 6000L
+    // 共享 OkHttp 单例：连接池复用 TCP/TLS、HTTP 响应缓存加速重复请求，避免每次 Jsoup.connect()
+    // 都新建连接（无 keep-alive、无缓存），这是轻量通道提速的关键。
+    companion object {
+        @Volatile
+        private var sharedClient: OkHttpClient? = null
+
+        private fun client(ctx: Context): OkHttpClient {
+            sharedClient?.let { return it }
+            synchronized(this) {
+                sharedClient?.let { return it }
+                val cache = try {
+                    Cache(File(ctx.applicationContext.cacheDir, "http_cache"), 20L * 1024 * 1024)
+                } catch (_: Exception) {
+                    null
+                }
+                val builder = OkHttpClient.Builder()
+                    .connectTimeout(10, TimeUnit.SECONDS)
+                    .readTimeout(10, TimeUnit.SECONDS)
+                    .writeTimeout(10, TimeUnit.SECONDS)
+                    .connectionPool(ConnectionPool(8, 60, TimeUnit.SECONDS))
+                    .followRedirects(true)
+                    .followSslRedirects(true)
+                cache?.let { builder.cache(it) }
+                return builder.build().also { sharedClient = it }
+            }
+        }
+    }
+
+    // 轻量 HTTP 通道（OkHttp 单例 + Jsoup 解析），用于搜索/章节/目录的快速尝试，避免每次都起 WebView。
+    // 轻量通道一旦成功即可跳过昂贵的 WebView，因此给予较充裕的预算让其完整抓取（含章内分页），
+    // 避免被 5s 掐断后整体回退到更慢的 WebView 通道。
+    private val LIGHT_FETCH_TIMEOUT_MS = 15000L
+    private val LIGHT_CONN_TIMEOUT_MS = 10000
+
+    private val UA = "Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
 
     // 轻量通道通用正则/常量
     private val lightNextRe = Regex("下一页|下一章|下一節|下一节|下章|下一|后一章|後一章|下篇|下一篇|次回|继续阅读|繼續閱讀|next chapter|next", RegexOption.IGNORE_CASE)
-    private val lightJunkRe = Regex("首页|书架|排行|分类|完本|书库|搜索|登录|注册|上一页|下一页|尾页|末页|加入书架|收藏|投票|推荐|月票|打赏|评论|最新章节|返回|下载|txt下载|阅读器|手机阅读|广告|客服|标签|作者|目录|更多|热门", RegexOption.IGNORE_CASE)
+    private val lightJunkRe = Regex("首页|书架|排行|分类|完本|书库|搜索|登录|注册|上一页|下一页|尾页|末页|加入书架|收藏|投票|推荐|月票|打赏|评论|最新章节|返回|下载|txt下载|阅读器|手机阅读|广告|客服|标签|作者|目录|更多|热门|从头阅读|开始阅读|立即阅读|点击阅读|阅读记录|阅读历史|浏览记录|浏览历史|上一章|下一章|上一節|下一節", RegexOption.IGNORE_CASE)
     private val lightChapterFileRe = Regex("\\.(html?|php|asp|aspx|jsp|shtml|do|action)$", RegexOption.IGNORE_CASE)
+
+    // 章节标题特征（与 WebView 层 chapterTitleRe 等价的轻量版）：用于把「同书链接」之外
+    // 的候选限制为真正的章节样式，避免把目录页上的站点名/排行榜/阅读记录等全站导航当章节。
+    private val lightChapterTitleRe = Regex(
+        "(?i)(第\\s*[0-9〇零一二三四五六七八九十百千万两]+\\s*[章回卷节篇集部话])" +
+            "|^(?:chapter|ch|part|episode|ep|vol)[\\s.\\-]*[0-9]{1,5}" +
+            "|^\\s*[0-9]{1,5}\\s*[、.．:：,，]"
+    )
+
+    // 纯导航/分页标题（整词匹配）：JS 提取层偶发把「上一页/下一页」等翻页链接当章节收进目录，
+    // 用整词精确匹配过滤，避免误伤含这些词的真实章节名（如「第10章 大推荐」不受影响）。
+    private val tocNavTitleRe = Regex(
+        "(?i)^[\\s‹›«»\\[\\]()（）·・\\-—_=~/\\\\]*((上一页)|(下一页)|(上頁)|(下頁)|(上一章)|(下一章)|(首页)|(首頁)|(尾页)|(尾頁)|(末页)|(末頁)|(第一页)|(最後一页)|(最后一页)|((返回)?目录)|(返回书页)|(书架)|(書架)|(返回)|(封面)|(最新章节)|(全本)|(完本)|(报错)|(加入书签)|(从头阅读)|(开始阅读)|(立即阅读)|(点击阅读)|(阅读记录)|(阅读历史)|(浏览记录)|(浏览历史)|(回到顶部)|(继续阅读))[\\s‹›«»\\[\\]()（）·・\\-—_=~/\\\\]*\$"
+    )
+
+    // 反爬混淆归一化（仅用于导航词/目录入口/翻页的匹配过滤，不改变展示标题）：
+    // 部分站点（如 kudushu.org）把「上一章」写成「上—章」（U+2014 一字线冒充「一」）、
+    // 把「目录」写成「返&nbsp回&nbsp目&nbsp录」（&nbsp 实体混入字缝），令导航词黑名单、
+    // 「目录」入口识别与章内翻页识别全部失效，最终目录里只剩「上一页/下一页」式假条目。
+    // 匹配前统一处理：先剥掉 &nbsp 类实体残留与所有空白/\u00A0/零宽字符，再把破折号类字符归一为「一」。
+    private val entityNbspRe = Regex("&(#160|#x0*a0|nbsp)(;)?", RegexOption.IGNORE_CASE)
+    private val invisibleWsRe = Regex("[\\s\u00A0\u2007\u202F\u200B\uFEFF]+")
+    private val dashLikeRe = Regex("[\u00AD\u2010\u2011\u2013\u2014\u2015\u2043\u2212\uFF0D\uFE63-]")
+
+    private fun stripInvisibleWs(s: String): String =
+        s.replace(entityNbspRe, "").replace(invisibleWsRe, "")
+
+    private fun navNorm(s: String): String =
+        stripInvisibleWs(s).replace(dashLikeRe, "一")
+
+    // 资源拦截：正文/目录提取只关心 DOM 文本，图片/音视频/字体与提取无关，
+    // 拦截后可大幅缩短 WebView 的页面加载耗时（不必等广告图、封面等大资源下载）。
+    private val blockableResRe = Regex(
+        "\\.(png|jpe?g|gif|webp|bmp|svg|mp3|mp4|webm|ogg|woff2?|ttf|otf|eot|ico)(\\?|#|$)",
+        RegexOption.IGNORE_CASE
+    )
+
+    private fun isBlockableResource(url: String): Boolean {
+        val u = url.substringBefore('#').substringBefore('?')
+        return blockableResRe.containsMatchIn(u)
+    }
+
+    private fun emptyResponse(): WebResourceResponse =
+        WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
 
     sealed class LoadResult {
         data class Success(
@@ -79,8 +166,8 @@ class UrlLoader(private val context: Context) {
         webViewRef = webView
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
-        webView.settings.userAgentString =
-            "Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
+        webView.settings.loadsImagesAutomatically = false
+        webView.settings.userAgentString = UA
 
         val host = Uri.parse(url).host ?: ""
         val allowedSuffix = if (host.count { it == '.' } >= 2) host.substringAfter('.') else host
@@ -94,11 +181,10 @@ class UrlLoader(private val context: Context) {
             ): WebResourceResponse? {
                 val reqHost = request?.url?.host ?: return null
                 if (!isAllowedRequest(reqHost, host, allowedSuffix)) {
-                    return WebResourceResponse(
-                        "text/plain",
-                        "utf-8",
-                        java.io.ByteArrayInputStream(ByteArray(0))
-                    )
+                    return emptyResponse()
+                }
+                if (isBlockableResource(request.url.toString())) {
+                    return emptyResponse()
                 }
                 return null
             }
@@ -147,6 +233,13 @@ class UrlLoader(private val context: Context) {
                             r=r.replace(/\n+/g,'\n');
                             r=r.replace(/^\s+|\s+$/g,'');
                             return r;
+                        }
+                        // 反爬混淆归一化：「下—页」(U+2014 冒充一)、「&nbsp」实体混入等会令翻页链接识别失效，
+                        // 导致章内分页断链、正文只抓到第 1 页。仅用于匹配，不改变正文内容。
+                        function normTxt(s){
+                            return (s||'').replace(/&(#160|x0*a0|nbsp);?/gi,'')
+                                .replace(/[\s\u00A0\u2007\u202F\u200B\uFEFF]+/g,'')
+                                .replace(/[\u00AD\u2010\u2011\u2013\u2014\u2015\u2043\u2212\uFF0D\uFE63-]/g,'一');
                         }
                         function isJunk(el){
                             var t=(el.tagName||'').toLowerCase();
@@ -237,7 +330,7 @@ class UrlLoader(private val context: Context) {
                         var next='';
                         var nextRe=/下一页|下一章|下一節|下一节|下章|下一|后一章|後一章|下一章|下篇|下一篇|次回|继续阅读|繼續閱讀|next chapter|next/i;
                         for(var k=0;k<links.length;k++){
-                            var lt=((links[k].textContent||'')+' '+(links[k].getAttribute('title')||''));
+                            var lt=normTxt((links[k].textContent||'')+' '+(links[k].getAttribute('title')||''));
                             var cls=(links[k].className||'').toString().toLowerCase();
                             var rel=(links[k].getAttribute('rel')||'').toLowerCase();
                             if(nextRe.test(lt) || cls.indexOf('next')>=0 || rel==='next'){
@@ -265,8 +358,10 @@ class UrlLoader(private val context: Context) {
             suspend fun waitForContent(): PageData {
                 var data = extract()
                 var attempt = 0
+                // 轮询间隔仅用于给 JS 渲染留时间：内容出现即停，静态页面首次即中、零等待。
+                // 不能删除——否则动态渲染页面在首查为空后瞬间耗尽重试，只能抓到静态骨架。
                 while ((data.content.isBlank() || data.isChallenge) && attempt < 12) {
-            delay(300)
+                    delay(250)
                     data = extract()
                     attempt++
                 }
@@ -274,7 +369,6 @@ class UrlLoader(private val context: Context) {
             }
 
             navigate(url)
-            delay(1500)
             val first = waitForContent()
             Log.d("UrlLoader", "page1 len=${first.content.length} next=${first.nextPage} title=[${first.title}] challenge=${first.isChallenge}")
             if (first.isChallenge && first.content.isBlank()) {
@@ -297,7 +391,6 @@ class UrlLoader(private val context: Context) {
                 }
                 if (total != null && idx >= total) break
                 navigate(next)
-                delay(1200)
                 val p = waitForContent()
                 Log.d("UrlLoader", "page$idx len=${p.content.length} next=${p.nextPage} dt=[${p.docTitle}] bl=${p.bodyLen}")
                 if (p.content.isBlank()) break
@@ -354,8 +447,8 @@ class UrlLoader(private val context: Context) {
         webViewRef = webView
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
-        webView.settings.userAgentString =
-            "Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
+        webView.settings.loadsImagesAutomatically = false
+        webView.settings.userAgentString = UA
 
         val host = Uri.parse(url).host ?: ""
         val allowedSuffix = if (host.count { it == '.' } >= 2) host.substringAfter('.') else host
@@ -365,7 +458,10 @@ class UrlLoader(private val context: Context) {
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                 val reqHost = request?.url?.host ?: return null
                 if (!isAllowedRequest(reqHost, host, allowedSuffix)) {
-                    return WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                    return emptyResponse()
+                }
+                if (isBlockableResource(request.url.toString())) {
+                    return emptyResponse()
                 }
                 return null
             }
@@ -399,7 +495,6 @@ class UrlLoader(private val context: Context) {
                     webView.loadUrl(target)
                 }
             }
-            delay(500)
         }
 
         return@withContext try {
@@ -416,12 +511,18 @@ class UrlLoader(private val context: Context) {
             navigateAndWait(url)
 
             val tocLinkJs = """(function(){
+                // norm：剥掉「返&nbsp回&nbsp目&nbsp录」式实体/空白混淆，并把「—」类一字线归一为「一」，再整词匹配
+                function norm(s){
+                    return (s||'').replace(/&(#160|x0*a0|nbsp);?/gi,'')
+                        .replace(/[\s\u00A0\u2007\u202F\u200B\uFEFF]+/g,'')
+                        .replace(/[\u00AD\u2010\u2011\u2013\u2014\u2015\u2043\u2212\uFF0D\uFE63-]/g,'一');
+                }
                 var all=document.getElementsByTagName('a');
                 for(var i=0;i<all.length;i++){
-                    var t=(all[i].textContent||'').trim();
+                    var t=norm(all[i].textContent);
                     var h=all[i].getAttribute('href')||'';
-                    if(!h || h.indexOf('javascript:')===0 || h.charAt(0)==='#') continue;
-                    if(/^(目录|全文目录|全部目录|章节目录|小说目录|查看目录|完整目录|全部章节|查看全部章节|查看全部|展开全部|全部更新|正文章节|开始阅读|立即阅读|点击阅读|继续阅读|最新章节|章节列表|倒序|正序|默认排序|卷[一二三四五六七八九十两0-9]+)$/.test(t)){
+                    if(!h || /^javascript:/i.test(h) || h.charAt(0)==='#') continue;
+                    if(/^(目录|全文目录|全部目录|章节目录|小说目录|查看目录|完整目录|返回目录|返回书页|全部章节|查看全部章节|查看全部|展开全部|全部更新|正文章节|开始阅读|立即阅读|点击阅读|继续阅读|最新章节|章节列表|倒序|正序|默认排序|卷[一二三四五六七八九十两0-9]+)$/.test(t)){
                         try{ return new URL(h, location.href).href; }catch(e){ return ''; }
                     }
                 }
@@ -521,8 +622,14 @@ class UrlLoader(private val context: Context) {
                 Log.d("UrlLoader", "diag[$tag] ${raw ?: "null"}")
             }
 
-            Log.d("UrlLoader", "chapterList: navigating to catalog: $listBaseUrl")
-            navigateAndWait(listBaseUrl)
+            // 已在目录页上（策略1导航的就是它）时不再重复加载同一页，省一次整页加载
+            val currentWvUrl = webView.url?.substringBefore('#') ?: ""
+            if (listBaseUrl.substringBefore('#') != currentWvUrl) {
+                Log.d("UrlLoader", "chapterList: navigating to catalog: $listBaseUrl")
+                navigateAndWait(listBaseUrl)
+            } else {
+                Log.d("UrlLoader", "chapterList: already on catalog page, skip re-navigation")
+            }
             diag("catalog")
 
             // 多层兜底提取脚本：
@@ -530,6 +637,14 @@ class UrlLoader(private val context: Context) {
             //   分页地址 P1 select 下拉 → P2 分页容器 → P3 下一页/尾页/页码链接 → P4 模板展开
             val extractJs = """(function(){
                 function resolve(u){ try{ return new URL(u, location.href).href; }catch(e){ return ''; } }
+                // 反爬混淆归一化（仅用于导航/分页匹配，不改变展示标题）：
+                // 「上—章」(U+2014 冒充一)、「返&nbsp回&nbsp目&nbsp录」(&nbsp 实体混入字缝) 等
+                // 会令黑名单与翻页识别失效，导致目录只剩上一页/下一页式假条目。
+                function normTxt(s){
+                    return (s||'').replace(/&(#160|x0*a0|nbsp);?/gi,'')
+                        .replace(/[\s\u00A0\u2007\u202F\u200B\uFEFF]+/g,'')
+                        .replace(/[\u00AD\u2010\u2011\u2013\u2014\u2015\u2043\u2212\uFF0D\uFE63-]/g,'一');
+                }
                 var origin = location.origin;
                 var curNoHash = location.href.split('#')[0];
                 var seg = (location.pathname||'').split('/').filter(function(x){return x.length>0;});
@@ -540,9 +655,12 @@ class UrlLoader(private val context: Context) {
                 function sameOrigin(u){ return !!u && u.indexOf(origin)===0; }
                 // 整词 nav 黑名单：覆盖全站顶部/侧边导航词、分类词、行动词等。整词匹配（前后必须是
                 // 非汉字字符或字符串边界），避免把"第一章"等真章节名误伤。
-                var navWords = ['首页','主页','书架','书城','书库','排行','排行总','排行榜','排行榜','分类','完本','全本','新书','免费','最新','热搜','搜索','更多','全部','展开','收起','详情','简介','下载','txt','TXT','加入','收藏','投票','月票','打赏','评论','返回','回到顶部','手机阅读','阅读器','换源','上一','下一','上一页','下一页','上一頁','下一頁','上章','下章','上页','下页','上篇','下篇','尾页','末页','首1页','首页','封面','原版','正版','书包网','搜书','搜','榜','单','玄幻','奇幻','武侠','仙侠','修真','都市','言情','历史','军事','网游','竞技','游戏','体育','科幻','灵异','恐怖','女生','男生','同人','穿越','重生','校园','职场','官场','商场','社会','情感','明星','动漫','二次元','轻小说','悬疑','推理','冒险','魔幻','玄幻奇幻','修真仙侠','武侠仙侠','都市言情','历史军事','网游竞技','科幻灵异','女生频道','男生频道','频道','完本榜','新书榜','收藏榜','排行榜','点我下载','下载APP','客户端','APP','广告','友链','友情链接','站点地图','网站地图','关于我们','联系我们','帮助','反馈','建议','公告','新闻','VIP','登录','注册','注销','退出','历史记录','我的书架','永久书架','我的收藏','我的阅读','换源阅读','友情链接','合作','作者','标签','专题','书评','书友','读者','其他栏目','栏目','栏目导航','展开全部','收起全部','查看更多','更多频道','更多分类','所有分类','全部作品','全部书籍','全部小说','小说榜','新书榜','畅销榜','热门','最热','推荐','强烈推荐','本周强推','本周推荐','编辑推荐','主编推荐','小编推荐','官方推荐','签约','VIP会员','会员','充值','充值中心','商城','购物车','我的订单','通知','系统通知','我的消息','私信','消息','设置','账号','个人中心','我的账户','账户','兑换','兑换码','礼品码','登录注册','免费阅读','正版阅读','最新章节','最新更新','最新章节列表','最新章节抢先看','抢先看','本章已更新','本书已更新','上一章目录','下一章目录','上一章按钮','下一章按钮','关闭','扫码','扫一扫','二维码','点击下载','立即下载','马上下载','立即打开','打开APP','在APP内打开','在浏览器打开','在浏览器中打开','继续阅读本文','继续阅读','继续浏览','继续访问','继续'];
+                var navWords = ['首页','主页','书架','书城','书库','排行','排行总','排行榜','排行榜','分类','完本','全本','新书','免费','最新','热搜','搜索','更多','全部','展开','收起','详情','简介','下载','txt','TXT','加入','收藏','投票','月票','打赏','评论','返回','回到顶部','手机阅读','阅读器','换源','上一','下一','上一页','下一页','上一頁','下一頁','上章','下章','上页','下页','上篇','下篇','尾页','末页','首1页','首页','封面','原版','正版','书包网','搜书','搜','榜','单','玄幻','奇幻','武侠','仙侠','修真','都市','言情','历史','军事','网游','竞技','游戏','体育','科幻','灵异','恐怖','女生','男生','同人','穿越','重生','校园','职场','官场','商场','社会','情感','明星','动漫','二次元','轻小说','悬疑','推理','冒险','魔幻','玄幻奇幻','修真仙侠','武侠仙侠','都市言情','历史军事','网游竞技','科幻灵异','女生频道','男生频道','频道','完本榜','新书榜','收藏榜','排行榜','点我下载','下载APP','客户端','APP','广告','友链','友情链接','站点地图','网站地图','关于我们','联系我们','帮助','反馈','建议','公告','新闻','VIP','登录','注册','注销','退出','历史记录','我的书架','永久书架','我的收藏','我的阅读','换源阅读','友情链接','合作','作者','标签','专题','书评','书友','读者','其他栏目','栏目','栏目导航','展开全部','收起全部','查看更多','更多频道','更多分类','所有分类','全部作品','全部书籍','全部小说','小说榜','新书榜','畅销榜','热门','最热','推荐','强烈推荐','本周强推','本周推荐','编辑推荐','主编推荐','小编推荐','官方推荐','签约','VIP会员','会员','充值','充值中心','商城','购物车','我的订单','通知','系统通知','我的消息','私信','消息','设置','账号','个人中心','我的账户','账户','兑换','兑换码','礼品码','登录注册','免费阅读','正版阅读','最新章节','最新更新','最新章节列表','最新章节抢先看','抢先看','本章已更新','本书已更新','上一章目录','下一章目录','上一章按钮','下一章按钮','关闭','扫码','扫一扫','二维码','点击下载','立即下载','马上下载','立即打开','打开APP','在APP内打开','在浏览器打开','在浏览器中打开','继续阅读本文','继续阅读','继续浏览','继续访问','继续','从头阅读','开始阅读','立即阅读','点击阅读','阅读记录','阅读历史','浏览记录','浏览历史','返回书页','返回目录','加入书签'];
                 function isCnCharCode(c){ return c>=0x4e00 && c<=0x9fff; }
                 function isLikelyNavText(t){
+                    if(!t) return false;
+                    // 归一化反爬混淆后再做整词黑名单匹配（上—章 / 返 回 目 录 等）
+                    t=normTxt(t);
                     if(!t) return false;
                     for(var i=0;i<navWords.length;i++){
                         var w=navWords[i];
@@ -591,7 +709,7 @@ class UrlLoader(private val context: Context) {
                 var chapterTitleRe=/第\s*[0-9〇零一二三四五六七八九十百千万两]+\s*[章回卷节篇集部话]|^\s*(chapter|ch|卷|卷[一二三四五六七八九十]+|part|episode|ep|vol)[\s.\-]*[0-9〇零一二三四五六七八九十百千万两]+|^\s*[0-9]{1,5}\s*[、.．:：,，\-\s]|^[0-9〇零一二三四五六七八九十百千万两]+\s*[、.．:：,，\-]|^Vol[\s.]*\d+/i;
                 function mkLink(a){
                     var h=a.getAttribute('href')||'';
-                    if(!h || h.indexOf('javascript:')===0 || h.charAt(0)==='#') return null;
+                    if(!h || /^javascript:/i.test(h) || h.charAt(0)==='#') return null;
                     var u=resolve(h); if(!u) return null;
                     var t=(a.textContent||'').replace(/\s+/g,' ').trim();
                     if(!t || t.length>80 || t.length<2) return null;
@@ -753,7 +871,7 @@ class UrlLoader(private val context: Context) {
                     var all=document.getElementsByTagName('a');
                     for(var i=0;i<all.length;i++){
                         var h=all[i].getAttribute('href')||'';
-                        if(!h || h.indexOf('javascript:')===0) continue;
+                        if(!h || /^javascript:/i.test(h)) continue;
                         var m=h.match(/(p-|page[_=-]?|index[_-]|list[_-])([0-9]+)/i);
                         if(m){ var ru=resolve(h); if(sameBook(ru)){ pageTemplate=ru.replace(m[1]+m[2], m[1]+'@N@'); break; } }
                     }
@@ -776,7 +894,7 @@ class UrlLoader(private val context: Context) {
                                 else { pu=resolve(bookPrefix.substring(0,bookPrefix.length-1)+'/p-'+n+'.html'); }
                             }
                         }
-                        if(pu && sameBook(pu)) addPage(pu);
+                        if(pu && (sameBook(pu)||pageLike(pu))) addPage(pu);
                     }
                 }
                 // P2 分页容器内的链接
@@ -785,23 +903,26 @@ class UrlLoader(private val context: Context) {
                     var pas=pgConts[pc].querySelectorAll('a');
                     for(var pa=0;pa<pas.length;pa++){
                         var ph=pas[pa].getAttribute('href')||'';
-                        if(!ph || ph.indexOf('javascript:')===0 || ph.charAt(0)==='#') continue;
+                        if(!ph || /^javascript:/i.test(ph) || ph.charAt(0)==='#') continue;
                         var ppu=resolve(ph);
-                        if(sameBook(ppu)&&pageLike(ppu)) addPage(ppu);
+                        if(sameOrigin(ppu)&&pageLike(ppu)) addPage(ppu);
                     }
                 }
-                // P3 下一页/尾页/页码 文本链接
+                // P3 下一页/尾页/页码 文本链接（normTxt 兼容「下—页」等一字线反爬变体）
                 var allA=document.getElementsByTagName('a');
                 for(var na=0;na<allA.length;na++){
-                    var nt=((allA[na].textContent||'')+' '+(allA[na].getAttribute('title')||'')).trim();
+                    var ntRaw=((allA[na].textContent||'')+' '+(allA[na].getAttribute('title')||'')).trim();
+                    var nt=normTxt(ntRaw);
                     var nh=allA[na].getAttribute('href')||'';
-                    if(!nh || nh.indexOf('javascript:')===0 || nh.charAt(0)==='#') continue;
+                    if(!nh || /^javascript:/i.test(nh) || nh.charAt(0)==='#') continue;
                     var isNav=/下一页|下页|后一页|尾页|末页|最后一页|>>|»/.test(nt);
                     var core=nt.replace(/[第页\s]/g,'');
                     var isNum=core.length>0 && core.length<=4 && !/[^0-9]/.test(core);
                     if(isNav || isNum){
                         var nu=resolve(nh);
-                        if(sameBook(nu)&&pageLike(nu)) addPage(nu);
+                        // 放宽 sameBook：部分站点目录在 /book/{id}/ 而分页在 /html/{id}/asc-N/，
+                        // 前缀不同但同属本书；addPage 已确保同源，pageLike 确保是分页样式的地址。
+                        if(pageLike(nu)) addPage(nu);
                     }
                 }
                 // P4 模板展开：由已发现分页的最大页码补全整段页码（如仅有“尾页”时）
@@ -851,12 +972,13 @@ class UrlLoader(private val context: Context) {
                 }
             }
 
-            // 动态渲染兜底：JS 生成目录的站点首屏可能为空，轮询重试直到出现章节
+            // 动态渲染兜底：JS 生成目录的站点首屏可能为空，轮询重试直到出现章节。
+            // 间隔同样只在章节未出现时消耗，出现即停。
             suspend fun extractWithRetry(): Triple<List<ChapterItem>, List<String>, Int> {
                 var result = runExtract()
                 var attempt = 0
-                while (result.first.size < 3 && attempt < 8) {
-                    delay(400)
+                while (result.first.size < 3 && attempt < 10) {
+                    delay(300)
                     val again = runExtract()
                     if (again.first.size > result.first.size) result = again
                     if (result.first.size >= 3) break
@@ -869,31 +991,49 @@ class UrlLoader(private val context: Context) {
             val allLinks = first.first.toMutableList()
             Log.d("UrlLoader", "chapterList: page1 layer=${first.third} links=${allLinks.size} pages=${first.second.size}")
 
-            // 分页队列：递归发现（后续页可能暴露更多分页，如只显示相邻页码的站点）
-            val normalizedBase = listBaseUrl.substringBefore('#')
-            val visited = mutableSetOf(normalizedBase)
-            val queue = ArrayDeque(first.second.map { it.substringBefore('#') }.filter { it !in visited })
-            var pageGuard = 0
-            while (queue.isNotEmpty() && pageGuard < 60) {
-                val pageUrl = queue.removeFirst()
-                if (!visited.add(pageUrl)) continue
-                pageGuard++
-                try {
-                    navigateAndWait(pageUrl)
-                    val p = extractWithRetry()
-                    allLinks.addAll(p.first)
-                    for (np in p.second) {
-                        val n = np.substringBefore('#')
-                        if (n !in visited && queue.none { it == n }) queue.addLast(n)
+            val initialPages = first.second.map { it.substringBefore('#') }.distinct()
+            val concurrentLinks = if (initialPages.isNotEmpty()) crawlTocPages(initialPages) else emptyList()
+            if (concurrentLinks.isEmpty() && initialPages.isNotEmpty()) {
+                // 轻量通道拿不到分页内容（常见于纯 JS 渲染站点），回退到 WebView 逐页串行抓取
+                Log.d("UrlLoader", "chapterList: light pagination empty, fallback to WebView sequential crawl")
+                val wvVisited = mutableSetOf(listBaseUrl.substringBefore('#'))
+                val wvQueue = ArrayDeque(initialPages.filter { it !in wvVisited })
+                var pageGuard = 0
+                while (wvQueue.isNotEmpty() && pageGuard < 60) {
+                    val pageUrl = wvQueue.removeFirst()
+                    if (!wvVisited.add(pageUrl)) continue
+                    pageGuard++
+                    try {
+                        navigateAndWait(pageUrl)
+                        val p = extractWithRetry()
+                        allLinks.addAll(p.first)
+                        for (np in p.second) {
+                            val n = np.substringBefore('#')
+                            if (n !in wvVisited && wvQueue.none { it == n }) wvQueue.addLast(n)
+                        }
+                    } catch (e: Exception) {
+                        Log.d("UrlLoader", "chapterList page fail $pageUrl: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.d("UrlLoader", "chapterList page fail $pageUrl: ${e.message}")
                 }
+            } else {
+                allLinks.addAll(concurrentLinks)
+            }
+
+            // 过滤纯导航/分页链接（如「上一页/下一页」「上—章」「返 回 目 录」等反爬变体），
+            // 避免它们被当成章节混进目录；原始标题与归一化标题任一命中即过滤。
+            val usableLinks = allLinks.filter {
+                val raw = it.title.trim()
+                !tocNavTitleRe.containsMatchIn(raw) &&
+                    !tocNavTitleRe.containsMatchIn(stripInvisibleWs(raw)) &&
+                    !tocNavTitleRe.containsMatchIn(navNorm(raw))
+            }
+            if (usableLinks.size < allLinks.size) {
+                Log.d("UrlLoader", "chapterList: filtered ${allLinks.size - usableLinks.size} nav/pagination links")
             }
 
             val seen = mutableSetOf<String>()
             val deduped = mutableListOf<ChapterItem>()
-            for (item in allLinks) {
+            for (item in usableLinks) {
                 if (seen.add(item.url)) deduped.add(item)
             }
 
@@ -936,7 +1076,7 @@ class UrlLoader(private val context: Context) {
     @SuppressLint("SetJavaScriptEnabled")
     suspend fun searchBooks(source: BookSource, keyword: String): SearchResult =
         withContext(Dispatchers.Main) {
-            val ua = "Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
+            val ua = UA
             // webView 创建与销毁兜底由下方 return@withContext try/catch/finally 统一处理
             var webViewRef: WebView? = null
             var rootRef: ViewGroup? = null
@@ -1062,7 +1202,7 @@ class UrlLoader(private val context: Context) {
                         }
                         found = parseSearch(raw)
                         if (found.isNotEmpty()) break
-                        delay(800)
+                        delay(500) // 必须保留：否则未命中时该循环会空转烧 CPU 直到超时
                     }
                     if (found.isNotEmpty()) {
                         items = found
@@ -1182,9 +1322,14 @@ class UrlLoader(private val context: Context) {
     }
 
     private fun chapterBase(url: String): String {
-        val file = Uri.parse(url).lastPathSegment ?: return url
-        val name = file.substringBefore('.')
-        var base = name.substringBefore('_')
+        // 兼容目录式章节地址（如 /html/{book}/{chapter}/ 以“/”结尾，lastPathSegment 为空）：
+        // 先去掉结尾斜杠再取最后一段，保证「134660050_2/」与「134660050/」归一到同一章基名，
+        // 否则章内分页会被误判为下一章，导致正文只抓到第 1 页。
+        val path = Uri.parse(url).path ?: return url
+        val name = path.trimEnd('/').substringAfterLast('/')
+        var base = name.substringBefore('.')
+        // 下划线翻页（如 134660050_2）只页码不同，视为同一章
+        base = base.substringBefore('_')
         // 中划线翻页（如 2535079-2.html / 123-2.html）只页码不同，视为同一章
         base = base.replace(Regex("""-\d+$"""), "")
         return base
@@ -1264,53 +1409,186 @@ class UrlLoader(private val context: Context) {
     }
     // ===================== 轻量 HTTP 通道（OkHttp + Jsoup） =====================
 
+    // 统一的轻量通道：用共享 OkHttp 拉取正文再用 Jsoup 解析，复用连接池与响应缓存。
+    private suspend fun lightFetchDoc(url: String): org.jsoup.nodes.Document = withContext(Dispatchers.IO) {
+        // 反爬站点会拦截「看起来不像浏览器」的请求（缺 Accept / 无 Referer 等），
+        // 这里把请求头补全成常规浏览器值，提升轻量通道命中率（失败会自动回退 WebView）。
+        val origin = run {
+            val u = android.net.Uri.parse(url)
+            "${u.scheme ?: "https"}://${u.host ?: ""}/"
+        }
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", UA)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+            .header("Referer", origin)
+            .header("Connection", "keep-alive")
+            .build()
+        val response = client(context).newCall(request).execute()
+        val bodyStr = response.body?.string()
+        response.close()
+        if (bodyStr.isNullOrEmpty()) throw IOException("empty body for $url")
+        Jsoup.parse(bodyStr, url)
+    }
+
     internal suspend fun fetchChapterLight(url: String): LoadResult = withContext(Dispatchers.IO) {
         withTimeout(LIGHT_FETCH_TIMEOUT_MS) {
-            val doc = try {
-                Jsoup.connect(url)
-                    .userAgent("Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36")
-                    .header("Accept-Language", "zh-CN,zh;q=0.9")
-                    .timeout(6000)
-                    .get()
+            val originalBase = chapterBase(url)
+            val firstDoc = try {
+                lightFetchDoc(url)
             } catch (e: Exception) {
                 return@withTimeout LoadResult.Error("轻量抓取失败: ${e.message}")
             }
-            if (isCloudflareChallenge(doc)) return@withTimeout LoadResult.Error("轻量抓取遇到反爬验证")
-            val title = extractChapterTitle(doc)
-            val content = extractContentFromDoc(doc)
+            if (isCloudflareChallenge(firstDoc)) return@withTimeout LoadResult.Error("轻量抓取遇到反爬验证")
+            val title = extractChapterTitle(firstDoc)
+            val sb = StringBuilder(extractContentFromDoc(firstDoc))
+            // 跟随章内分页（"下一页"指向同章第 2、3… 页），保持轻量通道完整且快速；
+            // 当"下一页"跨入下一章（URL 基础名不同）时停止，并将其作为 nextChapterUrl。
+            var nextChapterUrl: String? = null
+            var next = findNextUrl(firstDoc, url)
+            val visited = mutableSetOf<String>()
+            var guard = 0
+            while (next != null && guard < 15 && visited.add(next)) {
+                guard++
+                if (chapterBase(next) != originalBase) {
+                    nextChapterUrl = next
+                    break
+                }
+                val pDoc = try {
+                    lightFetchDoc(next)
+                } catch (e: Exception) {
+                    break
+                }
+                if (isCloudflareChallenge(pDoc)) break
+                val pc = extractContentFromDoc(pDoc)
+                if (pc.isBlank()) break
+                sb.append("\n\n").append(pc)
+                next = findNextUrl(pDoc, next)
+            }
+            val content = sb.toString().trim()
             if (content.isBlank()) return@withTimeout LoadResult.Error("轻量抓取正文为空")
-            val next = findNextUrl(doc, url)
-            val bookTitle = extractBookTitleFromDocTitle(doc)
-            LoadResult.Success(title, content, next, bookTitle)
+            val bookTitle = extractBookTitleFromDocTitle(firstDoc)
+            LoadResult.Success(title, content, nextChapterUrl, bookTitle)
         }
     }
 
     private suspend fun fetchChapterListLight(url: String): List<ChapterItem>? = withContext(Dispatchers.IO) {
         withTimeout(LIGHT_FETCH_TIMEOUT_MS) {
-            val target = url
-            val doc = try {
-                Jsoup.connect(target)
-                    .userAgent("Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36")
-                    .header("Accept-Language", "zh-CN,zh;q=0.9")
-                    .timeout(6000)
-                    .get()
+            // 传入的 url 往往是「章节页」而非目录页。先尝试直接解析；若拿不到章节列表，
+            // 则在页面内找「目录/开始阅读/全部章节」等入口链接并抓取该目录页，从而把整条
+            // 目录加载留在轻量通道（不走 WebView 的多次导航），显著提升打开目录速度。
+            val firstDoc = try {
+                lightFetchDoc(url)
             } catch (e: Exception) {
                 return@withTimeout null
             }
-            if (isCloudflareChallenge(doc)) return@withTimeout null
-            val items = extractChapterListFromDoc(doc, target)
-            if (items.isEmpty()) null else items
+            if (isCloudflareChallenge(firstDoc)) return@withTimeout null
+            var items = extractChapterListFromDoc(firstDoc, url)
+            // 仅当页面已确认是目录页（章节链接足够多）时才跟随分页，
+            // 避免把章节页的「下一章」误当目录分页抓出一堆垃圾链接。
+            var pages: List<String> = if (items.size >= 10) extractTocPaginationUrls(firstDoc, url) else emptyList()
+            // 直接解析出的链接太少（章节页常见只有「下一章/返回目录」等少量链接），
+            // 多半不是真正的目录，尝试在页内找目录入口并抓取目录页；仍不足则交给 WebView。
+            if (items.size < 3) {
+                pages = emptyList()
+                val tocHref = findTocLink(firstDoc, url)
+                if (tocHref != null && tocHref != url) {
+                    val tocDoc = try {
+                        lightFetchDoc(tocHref)
+                    } catch (e: Exception) {
+                        null
+                    }
+                    if (tocDoc != null && !isCloudflareChallenge(tocDoc)) {
+                        val tocItems = extractChapterListFromDoc(tocDoc, tocHref)
+                        if (tocItems.size >= 3) {
+                            items = tocItems
+                            pages = extractTocPaginationUrls(tocDoc, tocHref)
+                        }
+                    }
+                }
+            }
+            if (items.size < 3) return@withTimeout null
+            // 多页目录：并发补全后续分页（仍走轻量通道，不启 WebView），并跨页去重
+            if (pages.isNotEmpty()) {
+                val rest = crawlTocPages(pages)
+                if (rest.isNotEmpty()) {
+                    val merged = items.toMutableList()
+                    val seen = merged.mapTo(mutableSetOf()) { it.url }
+                    for (c in rest) if (seen.add(c.url)) merged.add(c)
+                    items = merged
+                }
+            }
+            items
         }
+    }
+
+    // 轻量通道抓取单个目录分页：返回 (章节链接, 更多分页链接)。
+    private suspend fun fetchTocPageLight(u: String): Pair<List<ChapterItem>, List<String>> {
+        return try {
+            val doc = lightFetchDoc(u)
+            extractChapterListFromDoc(doc, u) to extractTocPaginationUrls(doc, u)
+        } catch (e: Exception) {
+            Log.d("UrlLoader", "chapterList light page fail $u: ${e.message}")
+            emptyList<ChapterItem>() to emptyList()
+        }
+    }
+
+    // 并发抓取目录分页（每批 6 个、上限 60 页）：目录分页多为服务端直出，OkHttp 并发拉取
+    // 比在单个 WebView 上逐页串行导航快得多；对纯 JS 渲染站点由调用方回退 WebView。
+    private suspend fun crawlTocPages(urls: List<String>): List<ChapterItem> = coroutineScope {
+        val collected = mutableListOf<ChapterItem>()
+        val visited = mutableSetOf<String>()
+        val queue = ArrayDeque(urls.filter { visited.add(it) })
+        var guard = 0
+        while (queue.isNotEmpty() && guard < 60) {
+            val batch = mutableListOf<String>()
+            while (batch.size < 6 && queue.isNotEmpty()) {
+                val u = queue.removeFirst()
+                if (!visited.add(u)) continue
+                batch.add(u)
+            }
+            if (batch.isEmpty()) break
+            guard += batch.size
+            val results = batch.map { u ->
+                async(Dispatchers.IO) { u to fetchTocPageLight(u) }
+            }.awaitAll()
+            for ((_, res) in results) {
+                collected.addAll(res.first)
+                for (np in res.second) {
+                    val n = np.substringBefore('#')
+                    if (n !in visited) queue.addLast(n)
+                }
+            }
+        }
+        collected
+    }
+
+    // 在章节/首页文档中找出「目录/全部章节/开始阅读」等入口链接（与 WebView 的 tocLinkJs 等价）。
+    private fun findTocLink(doc: org.jsoup.nodes.Document, baseUrl: String): String? {
+        val tocRe = Regex(
+            "^(目录|全文目录|全部目录|章节目录|小说目录|查看目录|完整目录|返回目录|返回书页|全部章节|查看全部章节|查看全部|展开全部|全部更新|正文章节|开始阅读|立即阅读|点击阅读|继续阅读|最新章节|章节列表|倒序|正序|默认排序|卷[一二三四五六七八九十两0-9]+)$"
+        )
+        for (a in doc.select("a")) {
+            val href = a.attr("href") ?: continue
+            if (href.isEmpty() || href.lowercase().startsWith("javascript:") || href.startsWith("#")) continue
+            // navNorm：剥掉「返&nbsp回&nbsp目&nbsp录」式实体/空白混淆与「目—录」式一字线混淆后再整词匹配
+            val text = navNorm(a.text())
+            if (tocRe.containsMatchIn(text)) {
+                return try {
+                    java.net.URL(java.net.URL(baseUrl), href).toString()
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        }
+        return null
     }
 
     private suspend fun fetchSearchLight(searchUrl: String, keyword: String): List<SearchItem>? = withContext(Dispatchers.IO) {
         withTimeout(LIGHT_FETCH_TIMEOUT_MS) {
             val doc = try {
-                Jsoup.connect(searchUrl)
-                    .userAgent("Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36")
-                    .header("Accept-Language", "zh-CN,zh;q=0.9")
-                    .timeout(6000)
-                    .get()
+                lightFetchDoc(searchUrl)
             } catch (e: Exception) {
                 return@withTimeout null
             }
@@ -1356,6 +1634,12 @@ class UrlLoader(private val context: Context) {
     private fun extractChapterListFromDoc(doc: org.jsoup.nodes.Document, baseUrl: String): List<ChapterItem> {
         val seen = mutableSetOf<String>()
         val res = mutableListOf<ChapterItem>()
+        // 同书判定（与 WebView 层 sameBook 等价）：链接需位于「首段路径前缀」下，
+        // 或标题呈章节样式；否则目录页上的全站导航（首页/排行榜/阅读记录…）会混入目录。
+        val baseUri = android.net.Uri.parse(baseUrl)
+        val origin = "${baseUri.scheme ?: "http"}://${baseUri.host ?: ""}"
+        val bookPrefix = Regex("^/[^/]+").find(baseUri.path ?: "")?.value?.let { "$it/" } ?: ""
+        val sameBookPrefix = origin + bookPrefix
         val sels = arrayOf(
             "#list", "#chapterlist", ".list", ".chapter-list", ".catalog", ".mu_lu", ".mulu",
             ".book_list", "dl", "ol", "ul", "table", ".volume", ".volume-list", ".chapters"
@@ -1366,13 +1650,17 @@ class UrlLoader(private val context: Context) {
         for (c in containers) {
             for (a in c.select("a")) {
                 val href = a.attr("href") ?: continue
-                if (href.isEmpty() || href.startsWith("javascript:") || href.startsWith("#")) continue
+                if (href.isEmpty() || href.lowercase().startsWith("javascript:") || href.startsWith("#")) continue
                 val abs = try { java.net.URL(java.net.URL(baseUrl), href).toString() } catch (_: Exception) { continue }
                 val u0 = abs.split("#")[0]
                 if (u0 == baseUrl.split("#")[0]) continue
                 val t = a.text().replace("\\s+".toRegex(), " ").trim()
                 if (t.isEmpty() || t.length > 60 || t.length < 2) continue
-                if (lightJunkRe.containsMatchIn(t)) continue
+                // navNorm：先归一化反爬混淆（上—章 / 目\u00A0录 等）再过导航词黑名单
+                if (lightJunkRe.containsMatchIn(navNorm(t))) continue
+                if (bookPrefix.isNotEmpty() && !u0.startsWith(sameBookPrefix) &&
+                    !lightChapterTitleRe.containsMatchIn(navNorm(t))
+                ) continue
                 if (seen.contains(u0)) continue
                 seen.add(u0)
                 res.add(ChapterItem(t, u0))
@@ -1381,17 +1669,58 @@ class UrlLoader(private val context: Context) {
         if (res.isEmpty()) {
             for (a in doc.select("a")) {
                 val href = a.attr("href") ?: continue
-                if (href.isEmpty() || href.startsWith("javascript:") || href.startsWith("#")) continue
+                if (href.isEmpty() || href.lowercase().startsWith("javascript:") || href.startsWith("#")) continue
                 val abs = try { java.net.URL(java.net.URL(baseUrl), href).toString() } catch (_: Exception) { continue }
                 val u0 = abs.split("#")[0]
                 if (u0 == baseUrl.split("#")[0]) continue
                 val t = a.text().replace("\\s+".toRegex(), " ").trim()
                 if (t.isEmpty() || t.length > 60 || t.length < 2) continue
-                if (lightJunkRe.containsMatchIn(t)) continue
+                if (lightJunkRe.containsMatchIn(navNorm(t))) continue
+                if (bookPrefix.isNotEmpty() && !u0.startsWith(sameBookPrefix) &&
+                    !lightChapterTitleRe.containsMatchIn(navNorm(t))
+                ) continue
                 if (seen.contains(u0)) continue
                 seen.add(u0)
                 res.add(ChapterItem(t, u0))
             }
+        }
+        return res
+    }
+
+    // 从目录页文档中提取分页链接（下一页/尾页/页码/select 下拉等），用于并发抓取后续分页。
+    private fun extractTocPaginationUrls(doc: org.jsoup.nodes.Document, baseUrl: String): List<String> {
+        val res = mutableListOf<String>()
+        val seen = mutableSetOf<String>()
+        // 文本翻页链接：navNorm 兼容「下—页」等一字线反爬变体。
+        // 注意不收「首页/上页/上一页」：目录当前页即首页，向后翻无意义；且这些链接常指向
+        // 站首页/书架，被抓取后会在其上重新提取出一堆全站导航假章节。
+        val pageRe = Regex("^(下一页|下页|下頁|下一頁|尾页|末页|末頁|最後一页|最后一页|第\\d+页|\\d+|>|>>|»|\\d+/\\d+)\$")
+        fun addPage(href: String?) {
+            if (href.isNullOrEmpty() || href.lowercase().startsWith("javascript:") || href.startsWith("#")) return
+            val abs = try {
+                java.net.URL(java.net.URL(baseUrl), href).toString()
+            } catch (_: Exception) {
+                return
+            }
+            val key = abs.substringBefore('#')
+            if (key != baseUrl.substringBefore('#') && seen.add(key)) res.add(abs)
+        }
+        // 文本翻页链接：navNorm 兼容「下—页」等一字线反爬变体
+        for (a in doc.select("a")) {
+            val t = a.text().trim()
+            val cls = (a.className() ?: "").lowercase()
+            val rel = (a.attr("rel") ?: "").lowercase()
+            val isPage = pageRe.containsMatchIn(navNorm(t)) || pageRe.containsMatchIn(stripInvisibleWs(t)) ||
+                cls.contains("page") || rel == "next"
+            if (!isPage) continue
+            addPage(a.attr("href"))
+        }
+        // select 下拉分页（如 /html/{book}/asc-42/ 页码跳转）：一次拿到全部分页地址便于并发抓取。
+        // 仅接受路径型 value（含 / 或 .），避免纯数字 value 被拼成无效相对地址。
+        for (opt in doc.select("select option")) {
+            val v = opt.attr("value") ?: continue
+            if (v.isEmpty() || !(v.contains('/') || v.contains('.'))) continue
+            addPage(v)
         }
         return res
     }
@@ -1423,8 +1752,9 @@ class UrlLoader(private val context: Context) {
             val cls = (a.className() ?: "").lowercase()
             val rel = (a.attr("rel") ?: "").lowercase()
             val href = a.attr("href") ?: continue
-            if (href.startsWith("javascript:")) continue
-            if (lightNextRe.containsMatchIn(lt) || cls.indexOf("next") >= 0 || rel == "next") {
+            if (href.lowercase().startsWith("javascript:")) continue
+            // navNorm：兼容「下—页」等一字线反爬变体，否则章内分页断链、正文只抓到第 1 页
+            if (lightNextRe.containsMatchIn(navNorm(lt)) || cls.indexOf("next") >= 0 || rel == "next") {
                 val abs = try { java.net.URL(java.net.URL(baseUrl), href).toString() } catch (_: Exception) { continue }
                 if (abs.split("#")[0] != baseUrl.split("#")[0]) return abs
             }

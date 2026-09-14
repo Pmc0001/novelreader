@@ -4,10 +4,15 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.BatteryManager
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.VelocityTracker
@@ -112,6 +117,11 @@ class ReadingView @JvmOverloads constructor(
     var onNextChapter: (() -> Unit)? = null
     var onPrevChapter: (() -> Unit)? = null
     var onChapterTransitionComplete: ((isNext: Boolean) -> Unit)? = null
+    // 翻章动画开始前回调：上层可用已缓存的章节内容同步填充过渡内容，避免动画期间白屏；
+    // 返回 true 表示存在可翻的上一/下一章（应播放动画），false 表示已到边界（不应播放动画）
+    var onPrepareTransition: ((isNext: Boolean) -> Boolean)? = null
+    // 轻量无副作用查询：是否存在可翻的上一/下一章，供拖拽边界判断实时反映 prevChapters/nextUrl 状态
+    var onHasChapter: ((isNext: Boolean) -> Boolean)? = null
     // 滚动模式下上报阅读进度百分比（0~100）
     var onScrollProgress: ((percent: Int) -> Unit)? = null
 
@@ -208,7 +218,41 @@ class ReadingView @JvmOverloads constructor(
 
     private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
 
-    fun setContent(text: String) {
+    // ===== 页脚电量 =====
+    // 电池外框/填充/闪电：填充与文字同色（#999），低电量（<=20%）转为警示红
+    private val batteryFramePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#999999")
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+    private val batteryFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#999999")
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+    private val batteryBoltPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#999999")
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+    private val batteryBoltPath = Path()
+    private val batteryRect = RectF()
+
+    // -1 表示未知（取不到电量时不绘制电池，只显示时间）
+    private var batteryPercent: Int = -1
+    private var batteryCharging: Boolean = false
+    // 电量变化慢，30s 轮询一次即可；避免每帧读 BatteryManager
+    private val batteryPollRunnable = object : Runnable {
+        override fun run() {
+            refreshBattery()
+            invalidate()
+            postDelayed(this, 30_000L)
+        }
+    }
+    // 电量低于此值用警示色
+    private val batteryLowThreshold = 20
+
+    fun setContent(text: String, startAtEnd: Boolean = false) {
         content = text
         currentPage = 0
         drawPageBase = 0
@@ -227,7 +271,9 @@ class ReadingView @JvmOverloads constructor(
         nextChapterOffset = Float.MAX_VALUE
         flingRunning = false
         pendingStartPage = -1
-        pendingStartAtEnd = false
+        // startAtEnd=true 表示「从末尾进入」（如回翻上一章），排版完成后定位到末页/章底。
+        // 必须在 relayout() 启动前设置，排版完成的 computeLayout 才会据此定位。
+        pendingStartAtEnd = startAtEnd
         // 折行排版搬到后台线程；排版完成前保留上一章画面（避免白屏闪烁），
         // 完成后再赋值 allLines 并分页（见 relayout）。
         contentLayoutPending = true
@@ -432,8 +478,21 @@ class ReadingView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        removeCallbacks(batteryPollRunnable)
         layoutScope.cancel()
         super.onDetachedFromWindow()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        // 回到前台时立即刷新一次，避免离开期间电量变化后显示滞后
+        if (visibility == VISIBLE) {
+            refreshBattery()
+            removeCallbacks(batteryPollRunnable)
+            postDelayed(batteryPollRunnable, 30_000L)
+        } else {
+            removeCallbacks(batteryPollRunnable)
+        }
     }
 
     private fun computeLayout() {
@@ -637,19 +696,18 @@ class ReadingView @JvmOverloads constructor(
             }
         } else {
             if (chapterSwapPending) {
-                // 换章间隙：继续显示 incoming 章首/尾屏，待 relayout 完成后由正常分页接管
+                // 换章间隙：有过渡内容时显示 incoming 章首/尾屏；无过渡内容（未预取/预取未完成）
+                // 则保持空白底色，等待新章 relayout 接管，避免回落旧章当前页造成"滑出又弹回"的闪动。
                 val swapLines = if (chapterSwapIsNext) transitionNextLines else transitionPrevLines
                 if (swapLines.isNotEmpty()) {
                     drawPageAt(canvas, swapLines, 0f)
-                } else {
-                    drawPageAt(canvas, linesForPage(currentPage), 0f)
                 }
             } else {
                 drawPageAt(canvas, linesForPage(currentPage), 0f)
             }
         }
 
-        drawTime(canvas)
+        drawFooter(canvas)
     }
 
     // 滚动模式：连续绘制可见行；若已预取下一章则拼到末尾连续渲染，实现到底无缝衔接
@@ -706,11 +764,117 @@ class ReadingView @JvmOverloads constructor(
         }
     }
 
-    private fun drawTime(canvas: Canvas) {
-        val time = timeFormat.format(Date())
+    /**
+     * 页脚右下角：时间 + 电量（电池图标 + 百分比）。
+     * 时间右对齐，电池画在时间右侧，整体贴右下角 paddingH/paddingV。
+     */
+    private fun drawFooter(canvas: Canvas) {
         val paddingH = 16f * density
         val paddingV = 12f * density
-        canvas.drawText(time, width - paddingH, height - paddingV, timePaint)
+        val baselineY = height - paddingV
+        var right = width - paddingH
+
+        val showBattery = batteryPercent >= 0
+        if (showBattery) {
+            val bw = 17f * density
+            val bh = 9f * density
+            val fm = timePaint.fontMetrics
+            val textCenter = baselineY + (fm.ascent + fm.descent) / 2f
+            drawBattery(canvas, right - bw, textCenter - bh / 2f, bw, bh)
+            right -= bw + 5f * density
+        }
+
+        val time = timeFormat.format(Date())
+        val text = if (showBattery) "$time · $batteryPercent%" else time
+        canvas.drawText(text, right, baselineY, timePaint)
+    }
+
+    /** 画一个电池：外框 + 正极 + 内部按百分比填充；充电时在中间画闪电。 */
+    private fun drawBattery(canvas: Canvas, left: Float, top: Float, w: Float, h: Float) {
+        val stroke = maxOf(1f, 1f * density)
+        val capW = 1.8f * density
+        val capH = h * 0.42f
+        val bodyW = w - capW - 1f * density
+        val radius = 2f * density
+        val inset = 1.5f * density
+
+        val low = batteryPercent in 0..batteryLowThreshold
+        val frameColor = if (low) Color.parseColor("#E5484D") else Color.parseColor("#999999")
+        batteryFramePaint.color = frameColor
+        batteryFramePaint.strokeWidth = stroke
+        batteryFillPaint.color = frameColor
+        batteryBoltPaint.color = frameColor
+
+        // 正极（右侧小方块）
+        batteryRect.set(
+            left + bodyW + 1f * density,
+            top + (h - capH) / 2f,
+            left + bodyW + 1f * density + capW,
+            top + (h - capH) / 2f + capH
+        )
+        canvas.drawRoundRect(batteryRect, 0.6f * density, 0.6f * density, batteryFillPaint)
+
+        // 外框
+        batteryRect.set(left + stroke / 2, top + stroke / 2, left + bodyW - stroke / 2, top + h - stroke / 2)
+        canvas.drawRoundRect(batteryRect, radius, radius, batteryFramePaint)
+
+        // 内部填充
+        val innerMax = bodyW - inset * 2 - stroke
+        val innerW = innerMax * (batteryPercent.coerceIn(0, 100) / 100f)
+        if (innerW > 0.5f) {
+            batteryRect.set(
+                left + inset,
+                top + inset,
+                left + inset + innerW,
+                top + h - inset
+            )
+            canvas.drawRoundRect(batteryRect, radius * 0.5f, radius * 0.5f, batteryFillPaint)
+        }
+
+        if (batteryCharging) {
+            drawBolt(canvas, left + bodyW / 2f, top + h / 2f, h * 0.72f)
+        }
+    }
+
+    /** 充电闪电：用背景色画，压在填充之上，形成"抠空"效果。 */
+    private fun drawBolt(canvas: Canvas, cx: Float, cy: Float, h: Float) {
+        val w = h * 0.6f
+        batteryBoltPaint.color = bgColor
+        batteryBoltPath.reset()
+        batteryBoltPath.moveTo(cx + w * 0.18f, cy - h * 0.5f)
+        batteryBoltPath.lineTo(cx - w * 0.38f, cy + h * 0.06f)
+        batteryBoltPath.lineTo(cx + w * 0.02f, cy + h * 0.06f)
+        batteryBoltPath.lineTo(cx - w * 0.18f, cy + h * 0.5f)
+        batteryBoltPath.lineTo(cx + w * 0.38f, cy - h * 0.08f)
+        batteryBoltPath.lineTo(cx - w * 0.02f, cy - h * 0.08f)
+        batteryBoltPath.close()
+        canvas.drawPath(batteryBoltPath, batteryBoltPaint)
+    }
+
+    /**
+     * 读取当前电量：BatteryManager 取容量（无需权限），sticky 广播判断是否在充电。
+     * 结果缓存在 batteryPercent / batteryCharging，由 batteryPollRunnable 定期刷新。
+     */
+    private fun refreshBattery() {
+        try {
+            val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+            val capacity = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+            batteryPercent = if (capacity in 0..100) capacity else -1
+            val sticky = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val status = sticky?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            batteryCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL
+        } catch (_: Exception) {
+            batteryPercent = -1
+            batteryCharging = false
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        refreshBattery()
+        removeCallbacks(batteryPollRunnable)
+        postDelayed(batteryPollRunnable, 30_000L)
     }
 
     private fun drawPageAt(canvas: Canvas, lines: List<LineEntry>, offsetX: Float) {
@@ -776,6 +940,11 @@ class ReadingView @JvmOverloads constructor(
                 if (isDragging) {
                     val w = width.toFloat()
                     drawOffset += dx
+
+                    // 边界橡皮筋：仅在"本页已是首页且无上一章"时禁止向右拖出；
+                    // "本页已是末页且无下一章"时禁止向左拖出。章内正常的上一页/下一页翻动不受影响。
+                    if (drawOffset > 0f && drawPageBase <= 0 && onHasChapter?.invoke(false) != true) drawOffset = 0f
+                    if (drawOffset < 0f && drawPageBase >= totalPages - 1 && onHasChapter?.invoke(true) != true) drawOffset = 0f
 
                     // 超过一整页则连续翻页，支持一次滑动划过多页
                     while (drawOffset <= -w && drawPageBase < totalPages - 1) {
@@ -943,9 +1112,15 @@ class ReadingView @JvmOverloads constructor(
                     drawPageBase = currentPage
                     drawOffset = 0f
                     animateTo(w, currentPage - 1)
-                } else if (transitionPrevLines.isNotEmpty()) {
+                } else if (onPrepareTransition?.invoke(false) == true) {
+                    // 与翻页统一：播放翻页滑动动画；先用缓存同步填充过渡内容，避免白屏
+                    drawPageBase = currentPage
+                    drawOffset = 0f
+                    isDragging = false
                     animateChapterTransition(false)
                 } else {
+                    // 已是第一章：不播放翻章动画，交由上层提示（如"已经是第一章"）
+                    drawPageBase = currentPage
                     drawOffset = 0f
                     isDragging = false
                     invalidate()
@@ -958,9 +1133,15 @@ class ReadingView @JvmOverloads constructor(
                     drawPageBase = currentPage
                     drawOffset = 0f
                     animateTo(-w, currentPage + 1)
-                } else if (transitionNextLines.isNotEmpty()) {
+                } else if (onPrepareTransition?.invoke(true) == true) {
+                    // 与翻页统一：播放翻页滑动动画；先用缓存同步填充过渡内容，避免白屏
+                    drawPageBase = currentPage
+                    drawOffset = 0f
+                    isDragging = false
                     animateChapterTransition(true)
                 } else {
+                    // 已是最后一章：不播放翻章动画，交由上层提示（如"已经是最后一章"）
+                    drawPageBase = currentPage
                     drawOffset = 0f
                     isDragging = false
                     invalidate()
@@ -980,11 +1161,12 @@ class ReadingView @JvmOverloads constructor(
         val canPrev = drawPageBase > 0
         val flingFast = kotlin.math.abs(vx) > 1200f && ((vx < 0) == draggingNext)
 
-        // 下一章边界：如果有过渡内容，播放翻章动画；否则直接触发加载
+        // 下一章边界：统一播放与翻页一致的滑动动画（仅当确实存在可翻的下一章）
         if (draggingNext && !canNext && (absOff > threshold * 0.5f || flingFast)) {
-            if (transitionNextLines.isNotEmpty()) {
+            if (onPrepareTransition?.invoke(true) == true) {
                 animateChapterTransition(true)
             } else {
+                // 已是末章：复位状态并交上层提示（如"已经是最后一章"），避免画面卡在拖出位置
                 drawOffset = 0f
                 isDragging = false
                 invalidate()
@@ -992,11 +1174,12 @@ class ReadingView @JvmOverloads constructor(
             }
             return
         }
-        // 上一章边界：如果有过渡内容，播放翻章动画；否则直接触发加载
+        // 上一章边界：统一播放与翻页一致的滑动动画（仅当确实存在可翻的上一章）
         if (!draggingNext && !canPrev && (absOff > threshold * 0.5f || flingFast)) {
-            if (transitionPrevLines.isNotEmpty()) {
+            if (onPrepareTransition?.invoke(false) == true) {
                 animateChapterTransition(false)
             } else {
+                // 已是首章：复位状态并交上层提示（如"已经是第一章"），避免画面卡在拖出位置
                 drawOffset = 0f
                 isDragging = false
                 invalidate()

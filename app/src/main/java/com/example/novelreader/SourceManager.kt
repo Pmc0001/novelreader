@@ -15,54 +15,29 @@ object SourceManager {
     private const val PREFS = "book_sources"
     private const val KEY_CUSTOM = "custom"
 
-    // 内置书源（2026-08-04 复核：原内置地址多数已失效/改为 JS 渲染空壳，已替换为实测可用/高可用的端点）。
-    // sudugu 已用真实搜索页验证为服务端渲染；bookszw 为设备侧已验证可用；其余为常见格式+多候选兜底。
-    // 盗版站域名/搜索结构常变动，若某源无结果，请在「换源」面板添加自定义书源（粘贴带 {q} 的搜索地址）。
+    // 内置书源（2026-08-26 复核：原内置地址（sudugu/bookszw/52bqg/biquge/booktxt/69shu）多数已失效
+    // 或改为 JS 渲染空壳，已替换为实测「服务端渲染、可被轻量通道解析」的端点）。
+    // 这些盗版聚合站域名/搜索结构常变动，若某源无结果，请在「换源」面板添加自定义书源
+    // （粘贴带 {q} 的搜索地址，搜索表单多为 action="/search/"、参数名 searchkey）。
     private val BUILTIN = listOf(
         BookSource(
-            "sudugu", "速读谷(sudugu)",
+            "sanqishuwu", "三七书屋(sanqishuwu)",
             listOf(
-                "https://www.sudugu.org/i/sor.aspx?key={q}"
+                "https://www.sanqishuwu.com/search/?searchkey={q}"
             ),
             "utf-8", true
         ),
         BookSource(
-            "bookszw", "书神网(bookszw)",
+            "beiwokanshu", "被窝看书(beiwokanshu)",
             listOf(
-                "https://www.bookszw.com/search?q={q}",
-                "https://www.bookszw.com/s?q={q}"
+                "https://www.beiwokanshu.com/search/?searchkey={q}"
             ),
             "utf-8", true
         ),
         BookSource(
-            "bqg52", "笔趣阁(52bqg)",
+            "shanhaixs", "山海小说网(shanhaixs)",
             listOf(
-                "https://m.52bqg.com/search.html?searchkey={q}",
-                "https://www.52bqg.com/modules/article/search.php?searchkey={q}"
-            ),
-            "gbk", true
-        ),
-        BookSource(
-            "biquge", "笔趣阁(biquge)",
-            listOf(
-                "https://www.biquge.la/modules/article/search.php?searchkey={q}",
-                "https://www.biquge.com.tw/search?q={q}"
-            ),
-            "gbk", true
-        ),
-        BookSource(
-            "booktxt", "顶点小说(booktxt)",
-            listOf(
-                "https://www.booktxt.net/modules/article/search.php?searchkey={q}",
-                "https://so.biqusoso.com/s1.php?ie=utf-8&siteid=booktxt.net&q={q}"
-            ),
-            "utf-8", true
-        ),
-        BookSource(
-            "bq69", "69书吧(69shu)",
-            listOf(
-                "https://www.69shu.com/search?q={q}",
-                "https://m.69shu.com/search?q={q}"
+                "https://www.shanhaixs.com/search/?searchkey={q}"
             ),
             "utf-8", true
         )

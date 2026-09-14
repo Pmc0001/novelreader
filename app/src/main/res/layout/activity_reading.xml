@@ -1,0 +1,489 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/reading_container"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/white"
+    tools:context=".ReadingActivity">
+
+    <com.example.novelreader.ReadingView
+        android:id="@+id/reading_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:paddingTop="48dp"
+        android:paddingBottom="72dp"
+        android:clipToPadding="false" />
+
+
+
+    <!-- 高级加载视图 -->
+    <com.example.novelreader.PremiumLoadingView
+        android:id="@+id/premium_loading_view"
+        android:layout_width="140dp"
+        android:layout_height="140dp"
+        android:layout_gravity="center"
+        android:visibility="gone" />
+
+    <!-- Top Bar Container -->
+    <LinearLayout
+        android:id="@+id/top_bar_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:orientation="vertical"
+        android:background="@android:color/transparent"
+        android:visibility="gone">
+
+        <View
+            android:id="@+id/status_bar_spacer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp" />
+
+        <LinearLayout
+            android:id="@+id/top_bar"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:background="@android:color/transparent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="6dp">
+
+            <ImageButton
+                android:id="@+id/btn_back"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="返回"
+                android:src="@drawable/ic_back"
+                android:padding="9dp"
+                app:tint="#FFFFFFFF" />
+
+            <TextView
+                android:id="@+id/tv_title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:textColor="@color/textOnPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginHorizontal="8dp"
+                android:text="示例小说" />
+
+            <View
+                android:layout_width="44dp"
+                android:layout_height="44dp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Bottom Bar -->
+    <LinearLayout
+        android:id="@+id/bottom_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="@android:color/transparent"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@android:color/transparent"
+            android:paddingHorizontal="20dp"
+            android:paddingTop="14dp"
+            android:paddingBottom="10dp">
+
+            <!-- Row 1: 章节导航 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/btn_prev_chapter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="42dp"
+                    android:gravity="center"
+                    android:text="上一章"
+                    android:textSize="15sp"
+                    android:textColor="#FFFFFFFF"
+                    android:textStyle="bold"
+                    android:paddingHorizontal="24dp"
+                    android:background="@drawable/bg_bar_btn" />
+
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:id="@+id/tv_progress"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="12sp"
+                    android:singleLine="true"
+                    android:ellipsize="end"
+                    android:text="5% · 1 / 20" />
+
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:id="@+id/btn_next_chapter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="42dp"
+                    android:gravity="center"
+                    android:text="下一章"
+                    android:textSize="15sp"
+                    android:textColor="#FFFFFFFF"
+                    android:textStyle="bold"
+                    android:paddingHorizontal="24dp"
+                    android:background="@drawable/bg_bar_btn" />
+            </LinearLayout>
+
+            <FrameLayout
+                android:id="@+id/progress_track"
+                android:layout_width="match_parent"
+                android:layout_height="3dp"
+                android:layout_marginTop="10dp"
+                android:layout_marginBottom="2dp"
+                android:background="@drawable/bg_progress_track">
+
+                <View
+                    android:id="@+id/progress_fill"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/bg_progress_fill" />
+            </FrameLayout>
+
+            <!-- Row 2: 功能按钮 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:layout_marginTop="8dp">
+
+                <TextView
+                    android:id="@+id/btn_toc"
+                    android:layout_width="0dp"
+                    android:layout_height="42dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="目录"
+                    android:textSize="14sp"
+                    android:textColor="#FFFFFFFF"
+                    android:textStyle="bold"
+                    android:background="@drawable/bg_bar_btn"
+                    android:layout_marginEnd="8dp" />
+
+                <ImageButton
+                    android:id="@+id/btn_load_url"
+                    android:layout_width="42dp"
+                    android:layout_height="42dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="加载URL"
+                    android:src="@drawable/ic_url"
+                    android:padding="10dp"
+                    android:scaleType="centerInside"
+                    android:layout_marginEnd="8dp"
+                    app:tint="#FFFFFFFF" />
+
+                <ImageButton
+                    android:id="@+id/btn_night_mode"
+                    android:layout_width="42dp"
+                    android:layout_height="42dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="夜间模式"
+                    android:src="@drawable/ic_night_mode"
+                    android:padding="10dp"
+                    android:scaleType="centerInside"
+                    android:layout_marginEnd="8dp"
+                    app:tint="#FFFFFFFF" />
+
+                <ImageButton
+                    android:id="@+id/btn_shelf"
+                    android:layout_width="42dp"
+                    android:layout_height="42dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="加入书架"
+                    android:src="@drawable/ic_bookmark_border"
+                    android:padding="10dp"
+                    android:scaleType="centerInside"
+                    android:layout_marginEnd="8dp"
+                    app:tint="#FFFFFFFF" />
+
+                <ImageButton
+                    android:id="@+id/btn_settings"
+                    android:layout_width="42dp"
+                    android:layout_height="42dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="设置"
+                    android:src="@drawable/ic_settings"
+                    android:padding="10dp"
+                    android:scaleType="centerInside"
+                    app:tint="#FFFFFFFF" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <View
+            android:id="@+id/nav_bar_spacer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp" />
+
+    </LinearLayout>
+
+    <!-- 手势识别状态指示器（与页面底部的时间同行，水平居中） -->
+    <TextView
+        android:id="@+id/gesture_indicator"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="12dp"
+        android:visibility="gone"
+        tools:visibility="visible"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="4dp"
+        android:background="@drawable/bg_gesture_indicator"
+        android:text="手势"
+        android:textSize="11sp"
+        android:textColor="#4CAF50" />
+
+    <!-- 目录遮罩层 -->
+    <View
+        android:id="@+id/toc_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/overlayDim"
+        android:visibility="gone" />
+
+    <!-- 目录侧边抽屉 -->
+    <LinearLayout
+        android:id="@+id/toc_drawer"
+        android:layout_width="300dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:orientation="vertical"
+        android:background="@color/bgPage"
+        android:translationX="-300dp"
+        android:elevation="8dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@color/colorPrimary"
+            android:paddingHorizontal="16dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="目录"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="@android:color/white" />
+
+            <TextView
+                android:id="@+id/toc_change_source"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="换源"
+                android:textSize="14sp"
+                android:textColor="@android:color/white"
+                android:alpha="0.9"
+                android:padding="8dp"
+                android:background="?attr/selectableItemBackgroundBorderless" />
+
+            <TextView
+                android:id="@+id/toc_close"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="关闭"
+                android:textSize="14sp"
+                android:textColor="@android:color/white"
+                android:alpha="0.8"
+                android:padding="8dp"
+                android:background="?attr/selectableItemBackgroundBorderless" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <ScrollView
+                android:id="@+id/toc_scroll_view"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/toc_list"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="12dp" />
+            </ScrollView>
+
+            <com.example.novelreader.PremiumLoadingView
+                android:id="@+id/toc_loading"
+                android:layout_width="120dp"
+                android:layout_height="120dp"
+                android:layout_gravity="center"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/toc_empty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:text="未找到目录"
+                android:textSize="14sp"
+                android:textColor="@color/textSecondary"
+                android:visibility="gone" />
+        </FrameLayout>
+
+        <!-- 分页控制栏 -->
+        <LinearLayout
+            android:id="@+id/toc_pager_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="8dp"
+            android:background="@color/bgPage"
+            android:elevation="4dp"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/toc_pager_nav_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/toc_btn_prev_page"
+                    android:layout_width="0dp"
+                    android:layout_height="36dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="‹ 上一页"
+                    android:textSize="13sp"
+                    android:textColor="@color/colorPrimary"
+                    android:background="@drawable/bg_toc_item"
+                    android:layout_marginEnd="6dp" />
+
+                <TextView
+                    android:id="@+id/toc_page_info"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="1 / 1"
+                    android:textSize="12sp"
+                    android:textColor="@color/textSecondary"
+                    android:paddingHorizontal="8dp" />
+
+                <TextView
+                    android:id="@+id/toc_btn_next_page"
+                    android:layout_width="0dp"
+                    android:layout_height="36dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="下一页 ›"
+                    android:textSize="13sp"
+                    android:textColor="@color/colorPrimary"
+                    android:background="@drawable/bg_toc_item"
+                    android:layout_marginStart="6dp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:layout_marginTop="6dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="每页 "
+                    android:textSize="12sp"
+                    android:textColor="@color/textSecondary" />
+
+                <TextView
+                    android:id="@+id/toc_page_size_50"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text=" 50 "
+                    android:textSize="12sp"
+                    android:textColor="@color/colorPrimary"
+                    android:paddingHorizontal="6dp"
+                    android:paddingVertical="2dp"
+                    android:background="@drawable/bg_toc_item" />
+
+                <TextView
+                    android:id="@+id/toc_page_size_100"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text=" 100 "
+                    android:textSize="12sp"
+                    android:textColor="@color/colorPrimary"
+                    android:paddingHorizontal="6dp"
+                    android:paddingVertical="2dp"
+                    android:background="@drawable/bg_toc_item"
+                    android:layout_marginStart="4dp" />
+
+                <TextView
+                    android:id="@+id/toc_page_size_200"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text=" 200 "
+                    android:textSize="12sp"
+                    android:textColor="@color/colorPrimary"
+                    android:paddingHorizontal="6dp"
+                    android:paddingVertical="2dp"
+                    android:background="@drawable/bg_toc_item"
+                    android:layout_marginStart="4dp" />
+
+                <TextView
+                    android:id="@+id/toc_page_size_500"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text=" 500 "
+                    android:textSize="12sp"
+                    android:textColor="@color/colorPrimary"
+                    android:paddingHorizontal="6dp"
+                    android:paddingVertical="2dp"
+                    android:background="@drawable/bg_toc_item"
+                    android:layout_marginStart="4dp" />
+
+                <TextView
+                    android:id="@+id/toc_page_size_all"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text=" 全部 "
+                    android:textSize="12sp"
+                    android:textColor="@color/colorPrimary"
+                    android:paddingHorizontal="6dp"
+                    android:paddingVertical="2dp"
+                    android:background="@drawable/bg_toc_item"
+                    android:layout_marginStart="4dp" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+</FrameLayout>
