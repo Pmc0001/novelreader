@@ -20,6 +20,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Cache
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
@@ -54,10 +55,40 @@ class UrlLoader(private val context: Context) {
                     .connectionPool(ConnectionPool(8, 60, TimeUnit.SECONDS))
                     .followRedirects(true)
                     .followSslRedirects(true)
+                    // OkHttp 默认「同一 host 最多 5 个并发」，而目录分页是 8 路并发抓的 ——
+                    // 默认值会让每批多等一个 RTT（3 个请求排队），几十页的目录就是好几秒。
+                    .dispatcher(okhttp3.Dispatcher().apply {
+                        maxRequests = 32
+                        maxRequestsPerHost = 8
+                    })
                 cache?.let { builder.cache(it) }
                 return builder.build().also { sharedClient = it }
             }
         }
+
+        // 正文容器候选（取「清洗后文字最多」的那个，顺序不影响结果）
+        private val CONTENT_SELECTORS = arrayOf(
+            "div.content", ".content", "#content", "div.chaptercontent", ".chaptercontent",
+            "#chaptercontent", "article", ".article", "#article", "div.read", ".read", "#read",
+            "div.txt", ".txt", ".booktext", ".read-content", ".novel-content", ".chapter-content"
+        )
+
+        private val BLOCK_TAGS = setOf(
+            "p", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6",
+            "blockquote", "section", "article", "dd", "dt", "tr", "td", "th",
+            "pre", "figcaption", "main"
+        )
+
+        // 整词匹配（- / _ / 空格 / 首尾都算边界）。旧实现用 cls.contains("ad")，
+        // 会把 class="read" / "load" / "head" / "shadow" 这类正常容器判成广告整块删掉。
+        private val JUNK_CLASS_RE = Regex(
+            "(^|[\\s_-])(ad|ads|adv|advert\\w*|adsbygoogle|recommend\\w*|nav|navbar|navi|menu|footer|header|" +
+                "breadcrumb|pagination|page-link|bottom-link|top-link|popup|modal|comment\\w*|share|" +
+                "sidebar|copyright|toolbar|banner)([\\s_-]|$)"
+        )
+        private val JUNK_ID_RE = Regex(
+            "(^|[\\s_-])(ad|ads|nav|navbar|navi|menu|footer|header|comment|share|sidebar|banner)([\\s_-]|$)"
+        )
     }
 
     // 轻量 HTTP 通道（OkHttp 单例 + Jsoup 解析），用于搜索/章节/目录的快速尝试，避免每次都起 WebView。
@@ -141,7 +172,11 @@ class UrlLoader(private val context: Context) {
         val totalPages: Int?,
         val docTitle: String = "",
         val bodyLen: Int = 0,
-        val isChallenge: Boolean = false
+        val isChallenge: Boolean = false,
+        // 页面上所有「下一页 / 下一章」链接（已解析成绝对地址、已去重）。
+        // 章内分页链接和「下一章」在 DOM 里通常并存，旧实现只取第一条命中的 a 标签，
+        // 常常先命中顶部导航的「下一章」→ 被当成跨章链接直接 break → 每章只抓到第 1 页。
+        val nextCandidates: List<String> = emptyList()
     )
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -249,6 +284,17 @@ class UrlLoader(private val context: Context) {
                             if(/recommend|page-link|bottom-link|top-link|\bad\b|popup|modal|sidebar|comment|share|header|footer|breadcrumb|pagination|copyright/.test(c)) return true;
                             return false;
                         }
+                        // 只拆掉标签、保留其中的文字（用于 <a>）。
+                        // 直接 remove() 会连带删掉链接里的文字，正文出现内链就会缺字。
+                        function unwrapEls(root, sel){
+                            var list=root.querySelectorAll(sel);
+                            for(var i=0;i<list.length;i++){
+                                var n=list[i], p=n.parentNode;
+                                if(!p) continue;
+                                while(n.firstChild) p.insertBefore(n.firstChild, n);
+                                p.removeChild(n);
+                            }
+                        }
                         function isEmpty(el){
                             if(!el) return true;
                             var t=(el.textContent||'').trim();
@@ -306,7 +352,10 @@ class UrlLoader(private val context: Context) {
                         var x='', t='', total=null;
                         if(best){
                             var clone=best.cloneNode(true);
-                            clone.querySelectorAll('script,style,nav,header,footer,aside,a,img,figure,iframe,ins,.recommend,.page-link,.bottom-link,.top-link,.ad,.popup,.modal,.comment,.share,.breadcrumb,.pagination,.copyright').forEach(function(n){n.remove();});
+                            // 注意：不能把 <a> 放进 remove 列表。节点 remove() 会把里面的文字一起删掉，
+                            // 而很多站点会把正文里的书名/人名/关键词包成内链 —— 删掉就是整段少字。
+                            clone.querySelectorAll('script,style,nav,header,footer,aside,img,figure,iframe,ins,.recommend,.page-link,.bottom-link,.top-link,.ad,.popup,.modal,.comment,.share,.breadcrumb,.pagination,.copyright').forEach(function(n){n.remove();});
+                            unwrapEls(clone,'a');
                             var imgs=clone.querySelectorAll('div,p,span,strong,em,i,b,h1,h2,h3,h4,h5,h6,li,td,th,blockquote,pre');
                             for(var k=0;k<imgs.length;k++){
                                 if(!imgs[k].querySelector('img') && imgs[k].textContent.trim()===''){ imgs[k].remove(); }
@@ -319,27 +368,35 @@ class UrlLoader(private val context: Context) {
                         if(!x){
                             var body=document.body?document.body.cloneNode(true):null;
                             if(body){
-                                body.querySelectorAll('script,style,nav,header,footer,aside,a,img,figure,iframe,.recommend,.page-link,.bottom-link,.ad,.popup,.modal').forEach(function(n){n.remove();});
+                                body.querySelectorAll('script,style,nav,header,footer,aside,img,figure,iframe,.recommend,.page-link,.bottom-link,.ad,.popup,.modal').forEach(function(n){n.remove();});
+                                unwrapEls(body,'a');
                                 x=cleanText(collectText(body));
                             }
                             t=document.title||'';
                         }
                         var mm=t.match(/第\d+\/(\d+)页/);
                         if(mm) total=parseInt(mm[1],10);
+                        // 收集全部「下一页 / 下一章」候选：由 Kotlin 侧按 URL 基名区分
+                        // 「同章分页」与「下一章」，避免第一条就是「下一章」时章内分页被漏抓。
                         var links=document.querySelectorAll('a');
-                        var next='';
-                        var nextRe=/下一页|下一章|下一節|下一节|下章|下一|后一章|後一章|下一章|下篇|下一篇|次回|继续阅读|繼續閱讀|next chapter|next/i;
+                        var next='', nexts=[];
+                        var nextRe=/下一页|下一頁|下页|下頁|下一章|下一節|下一节|下章|下一|后一章|後一章|下篇|下一篇|次回|继续阅读|繼續閱讀|next chapter|next/i;
                         for(var k=0;k<links.length;k++){
                             var lt=normTxt((links[k].textContent||'')+' '+(links[k].getAttribute('title')||''));
                             var cls=(links[k].className||'').toString().toLowerCase();
                             var rel=(links[k].getAttribute('rel')||'').toLowerCase();
                             if(nextRe.test(lt) || cls.indexOf('next')>=0 || rel==='next'){
                                 var href=links[k].getAttribute('href')||'';
-                                if(href && href.indexOf('javascript:')!==0){ next=href; break; }
+                                if(href && href.indexOf('javascript:')!==0){
+                                    try{
+                                        var nu=new URL(href, location.href).href;
+                                        if(nu.split('#')[0]!==location.href.split('#')[0] && nexts.indexOf(nu)<0) nexts.push(nu);
+                                    }catch(e){}
+                                }
                             }
                         }
-                        if(!next && typeof nextpage !== 'undefined' && nextpage){ if((''+nextpage).indexOf('javascript:')!==0) next=nextpage; }
-                        if(next){ try{ var nu=new URL(next, location.href).href; if(nu.split('#')[0]===location.href.split('#')[0]) next=''; else next=nu; }catch(e){ next=''; } }
+                        if(!nexts.length && typeof nextpage !== 'undefined' && nextpage){ if((''+nextpage).indexOf('javascript:')!==0){ try{ nexts.push(new URL(''+nextpage, location.href).href); }catch(e){ nexts.push(''+nextpage); } } }
+                        next=nexts.length?nexts[0]:'';
                         var dt=document.title||'';
                         var bl=document.body?document.body.innerHTML.length:0;
                         var bd=document.body?document.body.innerText:'';
@@ -347,7 +404,7 @@ class UrlLoader(private val context: Context) {
                         var bdl=(bd||'').toLowerCase();
                         var cf=0;
                         if(dtl.indexOf('just a moment')>=0 || dtl.indexOf('attention required')>=0 || bdl.indexOf('enable javascript and cookies')>=0 || bdl.indexOf('checking your browser')>=0){ cf=1; }
-                        return JSON.stringify({t:t,x:x,next:next,total:total,dt:dt,bl:bl,cf:cf});
+                        return JSON.stringify({t:t,x:x,next:next,nexts:nexts,total:total,dt:dt,bl:bl,cf:cf});
                     })()"""
                     webView.evaluateJavascript(js) { raw ->
                         if (cont.isActive) cont.resume(parsePage(raw))
@@ -378,19 +435,20 @@ class UrlLoader(private val context: Context) {
             val sb = StringBuilder(first.content)
             var title = first.title
             var idx = 1
-            var next = first.nextPage
             var total = first.totalPages
             var guard = 0
-            var nextChapterUrl: String? = null
+            // 同章分页与「下一章」分开取：页面上两者常常同时存在，若把第一条命中当分页用，
+            // 一旦这条是「下一章」就会 break，只留下第 1 页（用户看到的就是"这章少了一截"）。
+            var next: String? = pickSameChapterPage(first.nextCandidates, originalBase)
+            var nextChapterUrl: String? = pickNextChapter(first.nextCandidates, originalBase)
+            val visitedPages = mutableSetOf(normPageKey(url))
 
-            while (next.isNotBlank() && guard < 30) {
+            while (guard < 30) {
+                val page = next?.takeIf { it.isNotBlank() } ?: break
                 guard++
-                if (chapterBase(next) != originalBase) {
-                    nextChapterUrl = next   // 末页的"下一页"即下一章
-                    break
-                }
                 if (total != null && idx >= total) break
-                navigate(next)
+                if (!visitedPages.add(normPageKey(page))) break
+                navigate(page)
                 val p = waitForContent()
                 Log.d("UrlLoader", "page$idx len=${p.content.length} next=${p.nextPage} dt=[${p.docTitle}] bl=${p.bodyLen}")
                 if (p.content.isBlank()) break
@@ -398,7 +456,10 @@ class UrlLoader(private val context: Context) {
                 if (title.isBlank()) title = p.title
                 sb.append("\n\n").append(p.content)
                 idx++
-                next = p.nextPage
+                if (nextChapterUrl.isNullOrBlank()) {
+                    nextChapterUrl = pickNextChapter(p.nextCandidates, originalBase)
+                }
+                next = pickSameChapterPage(p.nextCandidates, originalBase)
             }
 
             if (sb.isBlank()) {
@@ -429,11 +490,21 @@ class UrlLoader(private val context: Context) {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    suspend fun loadChapterList(url: String): ChapterListResult = withContext(Dispatchers.Main) {
+    /**
+     * 加载整条目录。
+     *
+     * @param onFirstPage 目录「首页」解析完成的回调（在 IO 线程触发）。多页目录要抓到第 2、3… 页
+     *   才能凑齐全部章节，但第一章一定在首页里 —— 打开一本书时先用这份首页列表进入正文，
+     *   不必等整条目录爬完（大书目录动辄几十页，能省下数秒的空白等待）。
+     */
+    suspend fun loadChapterList(
+        url: String,
+        onFirstPage: ((List<ChapterItem>) -> Unit)? = null
+    ): ChapterListResult = withContext(Dispatchers.Main) {
         // webView 创建与销毁兜底由下方 return@withContext try/catch/finally 统一处理
         // 轻量通道优先：直接拉目录页解析章节列表，命中则跳过 WebView。
         try {
-            val light = fetchChapterListLight(url)
+            val light = fetchChapterListLight(url, onFirstPage)
             if (light != null && light.isNotEmpty()) {
                 Log.d("UrlLoader", "loadChapterList: light channel hit, ${'$'}{light.size} chapters")
                 return@withContext ChapterListResult.Success(light)
@@ -1335,6 +1406,16 @@ class UrlLoader(private val context: Context) {
         return base
     }
 
+    /** 同章分页链接（与当前章 URL 基名相同）：优先翻它，才能把整章抓全。 */
+    private fun pickSameChapterPage(candidates: List<String>, base: String): String? =
+        candidates.firstOrNull { it.isNotBlank() && chapterBase(it) == base }
+
+    /** 跨章链接（基名不同）：作为「下一章」入口。 */
+    private fun pickNextChapter(candidates: List<String>, base: String): String? =
+        candidates.firstOrNull { it.isNotBlank() && chapterBase(it) != base }
+
+    private fun normPageKey(u: String): String = u.substringBefore('#').trimEnd('/')
+
     private fun isAllowedRequest(reqHost: String, host: String, allowedSuffix: String): Boolean {
         if (reqHost == host) return true
         if (reqHost.endsWith(".$allowedSuffix") || reqHost.endsWith(allowedSuffix)) return true
@@ -1368,14 +1449,23 @@ class UrlLoader(private val context: Context) {
         }
         return try {
             val obj = org.json.JSONObject(inner)
+            val nexts = mutableListOf<String>()
+            obj.optJSONArray("nexts")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    arr.optString(i, "").takeIf { it.isNotBlank() }?.let { nexts.add(it) }
+                }
+            }
+            val nextOne = obj.optString("next", "")
+            if (nexts.isEmpty() && nextOne.isNotBlank()) nexts.add(nextOne)
             PageData(
                 obj.optString("t", ""),
                 obj.optString("x", ""),
-                obj.optString("next", ""),
+                nextOne.ifBlank { nexts.firstOrNull() ?: "" },
                 if (obj.isNull("total")) null else obj.optInt("total", -1).let { if (it < 0) null else it },
                 obj.optString("dt", ""),
                 obj.optInt("bl", 0),
-                obj.optInt("cf", 0) == 1
+                obj.optInt("cf", 0) == 1,
+                nexts
             )
         } catch (_: Exception) {
             PageData("", inner, "", null)
@@ -1445,18 +1535,18 @@ class UrlLoader(private val context: Context) {
             val sb = StringBuilder(extractContentFromDoc(firstDoc))
             // 跟随章内分页（"下一页"指向同章第 2、3… 页），保持轻量通道完整且快速；
             // 当"下一页"跨入下一章（URL 基础名不同）时停止，并将其作为 nextChapterUrl。
-            var nextChapterUrl: String? = null
-            var next = findNextUrl(firstDoc, url)
-            val visited = mutableSetOf<String>()
+            // 同章分页优先；跨章链接单独记下来作为「下一章」，不再因为"第一条是下一章"而提前收工。
+            val firstCands = findNextLinks(firstDoc, url)
+            var nextPage: String? = pickSameChapterPage(firstCands, originalBase)
+            var nextChapterUrl: String? = pickNextChapter(firstCands, originalBase)
+            val visited = mutableSetOf(normPageKey(url))
             var guard = 0
-            while (next != null && guard < 15 && visited.add(next)) {
+            while (guard < 15) {
+                val page = nextPage?.takeIf { it.isNotBlank() } ?: break
+                if (!visited.add(normPageKey(page))) break
                 guard++
-                if (chapterBase(next) != originalBase) {
-                    nextChapterUrl = next
-                    break
-                }
                 val pDoc = try {
-                    lightFetchDoc(next)
+                    lightFetchDoc(page)
                 } catch (e: Exception) {
                     break
                 }
@@ -1464,7 +1554,9 @@ class UrlLoader(private val context: Context) {
                 val pc = extractContentFromDoc(pDoc)
                 if (pc.isBlank()) break
                 sb.append("\n\n").append(pc)
-                next = findNextUrl(pDoc, next)
+                val cands = findNextLinks(pDoc, page)
+                if (nextChapterUrl.isNullOrBlank()) nextChapterUrl = pickNextChapter(cands, originalBase)
+                nextPage = pickSameChapterPage(cands, originalBase)
             }
             val content = sb.toString().trim()
             if (content.isBlank()) return@withTimeout LoadResult.Error("轻量抓取正文为空")
@@ -1473,7 +1565,10 @@ class UrlLoader(private val context: Context) {
         }
     }
 
-    private suspend fun fetchChapterListLight(url: String): List<ChapterItem>? = withContext(Dispatchers.IO) {
+    private suspend fun fetchChapterListLight(
+        url: String,
+        onFirstPage: ((List<ChapterItem>) -> Unit)? = null
+    ): List<ChapterItem>? = withContext(Dispatchers.IO) {
         withTimeout(LIGHT_FETCH_TIMEOUT_MS) {
             // 传入的 url 往往是「章节页」而非目录页。先尝试直接解析；若拿不到章节列表，
             // 则在页面内找「目录/开始阅读/全部章节」等入口链接并抓取该目录页，从而把整条
@@ -1509,9 +1604,17 @@ class UrlLoader(private val context: Context) {
                 }
             }
             if (items.size < 3) return@withTimeout null
+            // 首页目录已成形：先回吐给调用方（打开书时立刻去抓第一章），再慢慢补齐后续分页。
+            // 回调在 IO 线程，调用方自行切主线程；异常不能影响目录抓取本身。
+            if (onFirstPage != null) runCatching { onFirstPage(items) }
             // 多页目录：并发补全后续分页（仍走轻量通道，不启 WebView），并跨页去重
             if (pages.isNotEmpty()) {
-                val rest = crawlTocPages(pages)
+                // 打开书的场景下，首章请求刚刚发出；先让它独占几百毫秒带宽，
+                // 别让并发的目录分页把首屏正文挤慢（目录本来就在后台，用户看不见）。
+                if (onFirstPage != null) delay(350)
+                // 分页补全给独立预算：超时/出错只丢"后面的分页"，不能把已经拿到的首页目录一起丢掉
+                // （旧实现一旦撞上外层 15s 超时，整条目录都作废并退回更慢的 WebView 通道）。
+                val rest = withTimeoutOrNull(7000L) { crawlTocPages(pages) } ?: emptyList()
                 if (rest.isNotEmpty()) {
                     val merged = items.toMutableList()
                     val seen = merged.mapTo(mutableSetOf()) { it.url }
@@ -1534,8 +1637,9 @@ class UrlLoader(private val context: Context) {
         }
     }
 
-    // 并发抓取目录分页（每批 6 个、上限 60 页）：目录分页多为服务端直出，OkHttp 并发拉取
+    // 并发抓取目录分页（每批 8 个、上限 60 页）：目录分页多为服务端直出，OkHttp 并发拉取
     // 比在单个 WebView 上逐页串行导航快得多；对纯 JS 渲染站点由调用方回退 WebView。
+    // 批大小与 OkHttp 的 maxRequestsPerHost 对齐（见 client），否则超出的请求只会在队列里多等一整个 RTT。
     private suspend fun crawlTocPages(urls: List<String>): List<ChapterItem> = coroutineScope {
         val collected = mutableListOf<ChapterItem>()
         val visited = mutableSetOf<String>()
@@ -1543,7 +1647,7 @@ class UrlLoader(private val context: Context) {
         var guard = 0
         while (queue.isNotEmpty() && guard < 60) {
             val batch = mutableListOf<String>()
-            while (batch.size < 6 && queue.isNotEmpty()) {
+            while (batch.size < 8 && queue.isNotEmpty()) {
                 val u = queue.removeFirst()
                 if (!visited.add(u)) continue
                 batch.add(u)
@@ -1725,19 +1829,41 @@ class UrlLoader(private val context: Context) {
         return res
     }
 
+    /**
+     * 从页面里提取正文。
+     *
+     * 这里规避了三条会「凭空少字」的坑：
+     * 1. 不能用 remove() 直接删 &lt;a&gt;：节点删除会连带删掉链接里的文字，而正文内链（书名/人名/关键词）
+     *    在小说站非常常见 —— 旧实现每遇到一个内链就少几个字。改为「拆壳保文字」。
+     * 2. 广告/导航判定不能用 cls.contains("ad") 这种子串匹配："read"、"load"、"head"、"shadow"
+     *    全都包含 "ad"，会把正文容器整块当成广告删掉。改为按整词匹配。
+     * 3. 候选容器的「长度评估」和「最终输出」必须用同一套口径（都在清洗后的树上跑 collectText），
+     *    否则会选中一个「看起来很长、其实大半是导航链接」的容器，真正的正文反而被丢弃。
+     */
     private fun extractContentFromDoc(doc: org.jsoup.nodes.Document): String {
-        val clone = doc.body().clone()
-        clone.select("script,style,nav,header,footer,aside,a,img,figure,iframe,.recommend,.page-link,.bottom-link,.ad,.popup,.modal").remove()
+        val body = doc.body() ?: return ""
+        val clone = body.clone()
+        // 注意此处的 remove 列表里没有 <a>：<a> 交给 unwrapAnchors 拆壳处理。
+        clone.select("script,style,nav,header,footer,aside,img,figure,iframe,ins,.recommend,.page-link,.bottom-link,.top-link,.ad,.popup,.modal,.comment,.share,.breadcrumb,.pagination,.copyright").remove()
+        unwrapAnchors(clone)
         var best: org.jsoup.nodes.Element? = null
         var bestLen = 0
-        for (cand in arrayOf("div.content", ".content", "#content", "div.chaptercontent", ".chaptercontent", "#chaptercontent", "article", ".article", "#article", "div.read", ".read", "#read", "div.txt", ".txt")) {
-            for (e in doc.select(cand)) {
-                val len = e.text().length
+        for (cand in CONTENT_SELECTORS) {
+            for (e in clone.select(cand)) {
+                val len = collectText(e).length
                 if (len > bestLen) { bestLen = len; best = e }
             }
         }
-        val text = if (best != null) cleanText(collectText(best)) else cleanText(collectText(clone))
-        return text
+        return cleanText(if (best != null) collectText(best) else collectText(clone))
+    }
+
+    /** 拆掉 <a> 标签但保留其中的文字（直接 remove 会把正文里的内链文字一起删掉）。 */
+    private fun unwrapAnchors(root: org.jsoup.nodes.Element) {
+        for (a in root.select("a").toList()) {
+            val t = a.text()
+            if (t.isNotBlank()) a.before(org.jsoup.nodes.TextNode(t))
+            a.remove()
+        }
     }
 
     private fun extractChapterTitle(doc: org.jsoup.nodes.Document): String {
@@ -1746,7 +1872,14 @@ class UrlLoader(private val context: Context) {
         return cleanText(t)
     }
 
-    private fun findNextUrl(doc: org.jsoup.nodes.Document, baseUrl: String): String? {
+    /**
+     * 返回页面上所有「下一页 / 下一章」候选链接（按 DOM 顺序去重）。
+     * 旧实现只返回第一条命中：章内分页与「下一章」并存时，先命中「下一章」就会把整章的
+     * 第 2、3 页全部漏掉，表现为这一章字数明显偏少。
+     */
+    private fun findNextLinks(doc: org.jsoup.nodes.Document, baseUrl: String): List<String> {
+        val res = mutableListOf<String>()
+        val self = normPageKey(baseUrl)
         for (a in doc.select("a")) {
             val lt = (a.text() + " " + (a.attr("title") ?: ""))
             val cls = (a.className() ?: "").lowercase()
@@ -1756,10 +1889,11 @@ class UrlLoader(private val context: Context) {
             // navNorm：兼容「下—页」等一字线反爬变体，否则章内分页断链、正文只抓到第 1 页
             if (lightNextRe.containsMatchIn(navNorm(lt)) || cls.indexOf("next") >= 0 || rel == "next") {
                 val abs = try { java.net.URL(java.net.URL(baseUrl), href).toString() } catch (_: Exception) { continue }
-                if (abs.split("#")[0] != baseUrl.split("#")[0]) return abs
+                val key = normPageKey(abs)
+                if (key != self && res.none { normPageKey(it) == key }) res.add(abs)
             }
         }
-        return null
+        return res
     }
 
     private fun isCloudflareChallenge(doc: org.jsoup.nodes.Document): Boolean {
@@ -1785,14 +1919,30 @@ class UrlLoader(private val context: Context) {
 
     private fun collectText(node: org.jsoup.nodes.Node): String {
         val sb = StringBuilder()
+        fun newline() {
+            if (sb.isNotEmpty() && sb.last() != '\n') sb.append('\n')
+        }
         fun walk(n: org.jsoup.nodes.Node) {
             if (n is org.jsoup.nodes.TextNode) {
-                sb.append(n.text())
+                // 用 wholeText 保留原始空格：旧实现既会在块内把文本 trim() 后直接拼接（吞掉词间空格），
+                // 又会在非块元素里强行补 ' '（把中文句子撑成「第 一 句」）。这里既不吞也不造。
+                // 只把 HTML 源码里的换行折成单个 \n，避免缩进被当成正文空格。
+                val raw = n.wholeText.replace(Regex("[\\r\\n]+[ \\t]*"), "\n")
+                if (raw.isNotEmpty()) {
+                    if (sb.isEmpty() || sb.last() == '\n') sb.append(raw.trimStart()) else sb.append(raw)
+                }
             } else if (n is org.jsoup.nodes.Element) {
                 if (isJunkElement(n)) return
-                if (n.tagName() == "br") sb.append("\n")
-                else if (n.tagName() == "p" || n.tagName() == "div") { sb.append("\n"); n.childNodes().forEach { walk(it) }; sb.append("\n") }
-                else n.childNodes().forEach { walk(it) }
+                val tag = n.tagName().lowercase()
+                when {
+                    tag == "br" -> sb.append('\n')
+                    tag in BLOCK_TAGS -> {
+                        newline()
+                        n.childNodes().forEach { walk(it) }
+                        newline()
+                    }
+                    else -> n.childNodes().forEach { walk(it) }
+                }
             }
         }
         node.childNodes().forEach { walk(it) }
@@ -1800,18 +1950,24 @@ class UrlLoader(private val context: Context) {
     }
 
     private fun isJunkElement(e: org.jsoup.nodes.Element): Boolean {
+        val tag = e.tagName()
+        if (tag == "script" || tag == "style" || tag == "nav" || tag == "header" ||
+            tag == "footer" || tag == "aside" || tag == "ins"
+        ) return true
         val cls = (e.className() ?: "").lowercase()
+        if (cls.isNotBlank() && JUNK_CLASS_RE.containsMatchIn(cls)) return true
         val id = (e.id() ?: "").lowercase()
-        return cls.contains("ad") || cls.contains("recommend") || cls.contains("nav") ||
-            id.contains("nav") || cls.contains("footer") || cls.contains("header") ||
-            e.tagName() == "script" || e.tagName() == "style"
+        if (id.isNotBlank() && JUNK_ID_RE.containsMatchIn(id)) return true
+        return false
     }
 
     private fun cleanText(s: String): String {
-        return s.replace("\r\n".toRegex(), "\n")
-            .replace("[ \t]+".toRegex(), " ")
-            .replace("\n{3,}".toRegex(), "\n\n")
+        return s.replace("\r\n", "\n").replace('\r', '\n')
+            // 不可见空白（含 U+00A0 / U+200B / U+FEFF）→ 普通空格；不碰全角空格 U+3000（中文缩进）
+            .replace(Regex("[\\t\\u00A0\\u2007\\u202F\\u200B\\uFEFF]+"), " ")
+            .replace(Regex("[ ]{2,}"), " ")
+            .lines().joinToString("\n") { it.trim() }
+            .replace(Regex("\\n{3,}"), "\n\n")
             .trim()
     }
-
 }

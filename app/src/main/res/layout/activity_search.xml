@@ -107,6 +107,66 @@
         android:progressTint="@color/colorAccent"
         android:visibility="gone" />
 
+    <!-- 跳转拦截提示条：网页自动跳转/弹窗被拦下时出现，用户可手动放行一次 -->
+    <LinearLayout
+        android:id="@+id/blocked_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bgWarnBar"
+        android:gravity="center_vertical"
+        android:minHeight="40dp"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="4dp"
+        android:paddingBottom="6dp"
+        android:visibility="gone">
+
+        <ImageView
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:contentDescription="已拦截跳转"
+            android:importantForAccessibility="no"
+            android:src="@drawable/ic_shield_alert" />
+
+        <TextView
+            android:id="@+id/tv_blocked"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:ellipsize="middle"
+            android:lineSpacingExtra="2dp"
+            android:maxLines="2"
+            android:textColor="@color/warnInk"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/btn_blocked_open"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:background="@drawable/bg_ripple_light"
+            android:gravity="center"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:text="打开"
+            android:textColor="@color/colorPrimary"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btn_blocked_dismiss"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:background="@drawable/bg_ripple_light"
+            android:gravity="center"
+            android:paddingStart="8dp"
+            android:paddingEnd="10dp"
+            android:text="忽略"
+            android:textColor="@color/textSecondary"
+            android:textSize="13sp" />
+    </LinearLayout>
+
     <!-- 内容区：原生首页引导面板 + 搜索/浏览 WebView -->
     <FrameLayout
         android:id="@+id/content_container"

@@ -21,4 +21,13 @@
         android:id="@+id/menu_copy_url"
         android:title="复制当前链接" />
 
+    <item
+        android:id="@+id/menu_strict_mode"
+        android:checkable="true"
+        android:title="严格模式：站外链接先确认" />
+
+    <item
+        android:id="@+id/menu_clear_allowed"
+        android:title="清除本次放行的站点" />
+
 </menu>

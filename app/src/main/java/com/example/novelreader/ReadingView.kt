@@ -75,8 +75,12 @@ class ReadingView @JvmOverloads constructor(
     private val density: Float
         get() = resources.displayMetrics.density
 
+    // 字号/行距/字体变化都要重排版，但「值没变」时绝不能重排：
+    // 阅读页 onResume 会整体 applySettings()，若每次都比对不变化就重排，等于每次回前台
+    // 都把整章折行重算一遍（低端机上是明显的卡顿，且会把进度条/页码回调抖动一遍）。
     var fontSize: Float = 18f
         set(value) {
+            if (field == value) return
             field = value
             textPaint.textSize = value * density
             relayout()
@@ -98,6 +102,7 @@ class ReadingView @JvmOverloads constructor(
 
     var lineSpacing: Float = 1.6f
         set(value) {
+            if (field == value) return
             field = value
             relayout()
             invalidate()
@@ -106,6 +111,7 @@ class ReadingView @JvmOverloads constructor(
     // 正文字体编号（对应 ReadingSettings.FONT_FAMILY_*）
     var fontFamily: Int = ReadingSettings.FONT_FAMILY_DEFAULT
         set(value) {
+            if (field == value) return
             field = value
             textPaint.typeface = ReadingSettings.resolveTypeface(value)
             relayout()
@@ -322,12 +328,17 @@ class ReadingView @JvmOverloads constructor(
         val firstLineIndent = fontSize * density * FIRST_LINE_INDENT
         val availableWidth = width - paddingH * 2
         val newLines = mutableListOf<LineEntry>()
+        // 过渡内容只需要「下一页的第一屏」：凑够一页行数就停，不必把下一章整章折行。
+        // 旧实现每次都把整章排完再取前 linesPerPage 行 —— 翻章动画开始时正是最吃主线程的时机，
+        // 这一刀能把这里的耗时从「整章」降到「一屏」（通常 20~30 行）。
+        val limit = if (linesPerPage > 0) linesPerPage else Int.MAX_VALUE
         for (paragraph in paras) {
             if (paragraph.isBlank()) continue
             val wrapped = splitParagraphToLines(paragraph, availableWidth, firstLineIndent, textPaint)
             wrapped.forEachIndexed { index, line ->
                 newLines.add(LineEntry(line, index == 0))
             }
+            if (newLines.size >= limit) break
         }
         transitionNextLines = if (newLines.size > linesPerPage) {
             newLines.subList(0, linesPerPage)
@@ -617,46 +628,66 @@ class ReadingView @JvmOverloads constructor(
         return if (startLine < allLines.size) allLines.subList(startLine, endLine) else emptyList()
     }
 
+    /**
+     * 把一段文字按当前可用宽度折成多行。
+     *
+     * 性能要点（整章折行是最热的循环，一章要跑几百上千次）：
+     *  1. 用 [Paint.breakText] 一次拿到「这一行能放几个字」，不再额外 measureText(整段剩余文字) 做预判
+     *     —— 那条预判本身是 O(剩余字数) 的字形测量，等于把每个段落变成 O(n²) 的重复测量；
+     *     breakText 返回 n 时就等于整段都放得下，判据完全等价。
+     *  2. 用 [Paint.breakText] 的 start/end 重载直接在原串上量，不再每行 substring 出「剩余文本」再复制。
+     *  3. 断行规则（回退到空格、跳过行首空白）与旧实现逐字一致，避免同一本书换版本后掉行/串行。
+     */
     private fun splitParagraphToLines(
         paragraph: String,
         availableWidth: Float,
         firstLineIndent: Float,
         paint: Paint
     ): List<String> {
-        val lines = mutableListOf<String>()
-        var remaining = paragraph
+        val len = paragraph.length
+        if (len == 0) return emptyList()
+        val lines = ArrayList<String>(4)
+        var start = 0
         var isFirstLine = true
 
-        while (remaining.isNotEmpty()) {
+        while (start < len) {
             val indent = if (isFirstLine) firstLineIndent else 0f
             val lineAvailableWidth = availableWidth - indent
             if (lineAvailableWidth <= 0) {
-                lines.add(remaining)
+                lines.add(paragraph.substring(start))
                 break
             }
-            val measuredWidth = paint.measureText(remaining)
-            if (measuredWidth <= lineAvailableWidth) {
-                lines.add(remaining)
+            // 返回「从 start 起能放进这一行的字符数」，整段放得下时等于 len - start
+            val fit = paint.breakText(paragraph, start, len, true, lineAvailableWidth, null)
+            if (fit <= 0) {
+                // 极窄宽度/异常字形：整段收下，避免死循环
+                lines.add(paragraph.substring(start))
                 break
             }
-
-            var breakPoint = paint.breakText(remaining, true, lineAvailableWidth, null)
-            if (breakPoint > 0 && breakPoint < remaining.length) {
-                while (breakPoint > 0 && remaining[breakPoint - 1] != ' ') {
-                    breakPoint--
-                }
-                if (breakPoint == 0) {
-                    breakPoint = paint.breakText(remaining, true, lineAvailableWidth, null)
-                }
+            val lineEnd = start + fit
+            if (lineEnd >= len) {
+                lines.add(paragraph.substring(start))
+                break
             }
-
-            lines.add(remaining.substring(0, breakPoint))
-            remaining = remaining.substring(breakPoint).trimStart()
+            // 断点落在单词中间时回退到最近的空格（与旧实现一致：找不到空格就保持原断点）
+            var cut = lineEnd
+            if (paragraph[cut - 1] != ' ') {
+                val space = paragraph.lastIndexOf(' ', cut - 1)
+                if (space >= start) cut = space + 1
+            }
+            lines.add(paragraph.substring(start, cut))
+            start = cut
+            // 等价于旧实现的 trimStart()：跳过下一行行首空白
+            while (start < len && isLineBreakSpace(paragraph[start])) start++
             isFirstLine = false
         }
 
         return if (lines.isEmpty()) listOf(paragraph) else lines
     }
+
+    /** 行首可被 trimStart 跳过的空白（含中文全角空格 U+3000 与不换行空格）。 */
+    private fun isLineBreakSpace(c: Char): Boolean =
+        c.isWhitespace() || c == '\u3000' || c == '\u00A0' || c == '\u2007' || c == '\u202F'
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)

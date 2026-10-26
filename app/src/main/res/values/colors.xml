@@ -24,6 +24,10 @@
     <color name="divider">#FFE8DDD0</color>
     <color name="error">#FFD32F2F</color>
 
+    <!-- 跳转拦截提示条（暖琥珀警示，与米白页面协调） -->
+    <color name="bgWarnBar">#FFF8E9D8</color>
+    <color name="warnInk">#FF8A5A2B</color>
+
     <color name="bgPage">#FFFAF6F1</color>
     <color name="bgCard">#FFFFFFFF</color>
     <color name="bgCardElevated">#FFFFFFFF</color>

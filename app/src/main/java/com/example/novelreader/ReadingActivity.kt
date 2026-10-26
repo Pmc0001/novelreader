@@ -24,10 +24,12 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 class ReadingActivity : AppCompatActivity() {
@@ -83,7 +85,13 @@ class ReadingActivity : AppCompatActivity() {
     // 目录加载 single-flight：多个入口（openBook / loadToc / prefetchToc / ensureTocLoaded）
     // 共享同一个加载任务，避免并发重复爬取整条目录。
     private var tocDeferred: Deferred<UrlLoader.ChapterListResult>? = null
-    private var tocDeferredKey: String? = null
+    // 目录的「最佳起点 URL」：通常是书页/目录页。章节目录页往往要先抓一次章节页才能找到「目录」入口，
+    // 从书页起爬能少一个 RTT；打开书时记下来，后续 loadToc/prefetchToc 直接复用。
+    private var tocSourceUrl: String? = null
+    // 当前目录列表里是否成功定位到了「正在读的这一章」（用于全量目录补齐后决定要不要重新定位）
+    private var tocCurrentFound = false
+    // 当前章在目录中的下标（-1 表示没定位到）；「全部」模式据此决定首批要渲染到哪
+    private var tocCurrentIndex = -1
     private var tocCurrentPage = 0
     private var tocPageSize = 100
     private val tocPageSizeKey = "toc_page_size"
@@ -125,6 +133,10 @@ class ReadingActivity : AppCompatActivity() {
         settings = ReadingSettings(this)
         historyStore = HistoryStore(this)
         ReadingStats.init(this)
+        // 进程被系统在后台杀掉后重建时，Intent extras 仍是"最初启动"时的快照（已过期），
+        // 直接用会回到很久前的章节/位置。这里先用 onSaveInstanceState 保存的最新导航
+        // 状态覆盖 intent，使后续 loadContent() 走正确的续读分支，恢复到真正的上次阅读页。
+        savedInstanceState?.let { restoreSavedInstanceState(it) }
         currentUrl = intent.getStringExtra("EXTRA_URL")
         nextChapterUrl = intent.getStringExtra("EXTRA_NEXT_CHAPTER")
 
@@ -289,6 +301,9 @@ class ReadingActivity : AppCompatActivity() {
     /**
      * 从搜索结果打开一本书：先拉取目录，再加载第一章进入阅读。
      * bookUrl 为书籍目录/主页链接；bookTitle 为搜索返回的书名（加载期间作为标题展示）。
+     *
+     * 性能：不再「等整条目录爬完才去抓第一章」。目录首页一解析出来（[getToc] 的 onFirstPage）
+     * 就立刻并发抓第一章并显示，剩余分页在后台继续补 —— 几十页目录的大书能省下数秒空白。
      */
     private fun openBook(bookUrl: String, bookTitle: String?) {
         // 关键：把传入的书名固定到 currentBookTitle，后续章节切换不会覆盖它
@@ -296,9 +311,21 @@ class ReadingActivity : AppCompatActivity() {
         currentChapterTitle = bookTitle ?: "加载中…"
         tvTitle.text = currentChapterTitle
         showLoading(true)
+        // 这一版目录是从「书页」爬出来的，记下来：后面打开目录不用再从章节页绕一圈
+        tocSourceUrl = bookUrl
         val loader = UrlLoader(this)
+        // 首章只进一次：快通道和目录兜底可能都想进，用原子标记去重，避免抓两遍、界面闪两下
+        val firstRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+        val enterFirstIfNeeded: (String) -> Unit = { url ->
+            if (firstRequested.compareAndSet(false, true)) {
+                lifecycleScope.launch { enterFirstChapter(loader, url) }
+            }
+        }
         lifecycleScope.launch {
-            when (val toc = getToc(bookUrl)) {
+            val toc = getToc(bookUrl) { items ->
+                items.firstOrNull()?.url?.let { enterFirstIfNeeded(it) }
+            }
+            when (toc) {
                 is UrlLoader.ChapterListResult.Success -> {
                     val first = toc.items.firstOrNull()
                     if (first == null) {
@@ -310,30 +337,38 @@ class ReadingActivity : AppCompatActivity() {
                         ).show()
                         return@launch
                     }
-                    when (val chap = loader.loadUrl(first.url)) {
-                        is UrlLoader.LoadResult.Success -> {
-                            showLoading(false)
-                            prevChapters.clear()
-                            currentUrl = first.url
-                            nextChapterUrl = chap.nextChapterUrl
-                            val cached = CachedChapter(chap.title, chap.content, chap.nextChapterUrl)
-                            chapterCache[first.url] = cached
-                            applyChapter(cached, first.url)
-                            prefetchChapters(first.url, chap.nextChapterUrl, null)
-                            updateNextFromToc(first.url)
-                            updatePrevFromToc(first.url)
-                            updateNavButtons()
-                        }
-                        is UrlLoader.LoadResult.Error -> {
-                            showLoading(false)
-                            Toast.makeText(this@ReadingActivity, chap.message, Toast.LENGTH_LONG).show()
-                        }
-                    }
+                    // 轻量通道没回吐首页（例如走了 WebView 通道）时，这里补上首章
+                    enterFirstIfNeeded(first.url)
                 }
                 is UrlLoader.ChapterListResult.Error -> {
-                    showLoading(false)
-                    Toast.makeText(this@ReadingActivity, toc.message, Toast.LENGTH_LONG).show()
+                    // 首章若已由快通道显示成功，目录失败不应把正文打回加载态
+                    if (!firstRequested.get()) {
+                        showLoading(false)
+                        Toast.makeText(this@ReadingActivity, toc.message, Toast.LENGTH_LONG).show()
+                    }
                 }
+            }
+        }
+    }
+
+    /** 打开一本书的「第一章」：抓正文、应用并预取相邻章。由 [openBook] 的任意一条通道触发（只跑一次）。 */
+    private suspend fun enterFirstChapter(loader: UrlLoader, firstUrl: String) {
+        when (val chap = loader.loadUrl(firstUrl)) {
+            is UrlLoader.LoadResult.Success -> {
+                showLoading(false)
+                prevChapters.clear()
+                currentUrl = firstUrl
+                nextChapterUrl = chap.nextChapterUrl
+                val cached = CachedChapter(chap.title, chap.content, chap.nextChapterUrl)
+                chapterCache[firstUrl] = cached
+                applyChapter(cached, firstUrl)
+                prefetchChapters(firstUrl, chap.nextChapterUrl, null)
+                // 目录可能还在后台爬：等它就绪后回填上一/下一章入口
+                ensureTocLoaded(firstUrl)
+            }
+            is UrlLoader.LoadResult.Error -> {
+                showLoading(false)
+                Toast.makeText(this@ReadingActivity, chap.message, Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -748,29 +783,110 @@ class ReadingActivity : AppCompatActivity() {
             .show()
     }
 
-    // 目录 single-flight 加载：已缓存直接返回；进行中的同一 baseUrl 任务共享其结果；
+    // 目录 single-flight 加载：已缓存直接返回；进行中的任务（无论由哪个入口发起）共享其结果；
     // 否则启动一次加载并填充 chapterToc，后续的 loadToc/prefetchToc 调用复用同一结果。
-    private suspend fun getToc(baseUrl: String): UrlLoader.ChapterListResult {
+    //
+    // 注意不再按 baseUrl 区分在途任务：同一个 Activity 只对应一本书，而「打开书」用书 URL 起爬、
+    // 「首章显示后补目录」用章节 URL 请求 —— 若按 key 判定就会重复爬一整条目录（多页目录尤其明显）。
+    private suspend fun getToc(
+        baseUrl: String,
+        onFirstPage: ((List<UrlLoader.ChapterItem>) -> Unit)? = null
+    ): UrlLoader.ChapterListResult {
         if (chapterToc.isNotEmpty()) {
             return UrlLoader.ChapterListResult.Success(chapterToc)
         }
-        val existing = tocDeferred
-        if (existing != null && tocDeferredKey == baseUrl && existing.isActive) {
-            return existing.await()
-        }
+        tocDeferred?.let { if (it.isActive) return it.await() }
         val loader = UrlLoader(this)
-        val deferred = lifecycleScope.async { loader.loadChapterList(baseUrl) }
-        tocDeferred = deferred
-        tocDeferredKey = baseUrl
-        val result = deferred.await()
-        if (result is UrlLoader.ChapterListResult.Success && chapterToc.isEmpty()) {
-            chapterToc = result.items
+        // 包一层：目录抓取若抛异常，把它收敛成 Error 结果 —— 现在有多个入口会 await 同一个任务，
+        // 裸异常会让任意一个调用方的协程直接崩掉（表现为打开书就闪退）。
+        val deferred = lifecycleScope.async {
+            runCatching {
+                val r = loader.loadChapterList(baseUrl) { firstPage ->
+                    // 目录「首页」解析出来就先交给 UI...
+                    publishTocFirstPage(firstPage)
+                    onFirstPage?.invoke(firstPage)
+                }
+                // 全量到齐：直接在这里落袋（而不是等 await 回来）—— 首个调用方可能已被取消，
+                // 但目录本身仍应该补全，否则目录会永远停在首页那几十章。
+                if (r is UrlLoader.ChapterListResult.Success &&
+                    r.items.size > chapterToc.size && !isFinishing && !isDestroyed
+                ) {
+                    chapterToc = r.items
+                    onTocDataRefreshed()
+                }
+                r
+            }.getOrElse {
+                UrlLoader.ChapterListResult.Error("目录加载失败：${it.message ?: it.javaClass.simpleName}")
+            }
         }
-        return result
+        tocDeferred = deferred
+        return deferred.await()
+    }
+
+    /**
+     * 目录首页到手（[UrlLoader.loadChapterList] 的 onFirstPage，回调在 IO 线程）。
+     * 先落袋并让已打开的目录抽屉立刻出内容 —— 这是「打开目录要等 3 秒」的主修：
+     * 痛点不是目录慢，而是旧实现非要等整条目录（含全部分页）爬完才肯渲染。
+     */
+    private fun publishTocFirstPage(items: List<UrlLoader.ChapterItem>) {
+        if (items.size < 3) return
+        lifecycleScope.launch(Dispatchers.Main.immediate) {
+            if (isFinishing || isDestroyed) return@launch
+            if (chapterToc.size >= items.size) return@launch
+            chapterToc = items
+            // 抽屉正开着且还是空的（正在转圈）：立刻把首页那段画出来，loading 收掉
+            if (tocOverlay.visibility == View.VISIBLE && tocList.childCount == 0) {
+                tocLoading.visibility = View.GONE
+                renderToc()
+            }
+        }
+    }
+
+    /** 目录数据变多（首页 → 全量）后的轻量刷新：不重建整张列表，避免把用户正在看的位置跳走。 */
+    private fun onTocDataRefreshed() {
+        if (!isLocalBook) {
+            currentUrl?.let { url ->
+                updateNextFromToc(url)
+                updatePrevFromToc(url)
+                updateNavButtons()
+            }
+        }
+        if (tocOverlay.visibility != View.VISIBLE) return
+        if (chapterToc.isEmpty()) return
+        if (tocList.childCount == 0) {
+            tocLoading.visibility = View.GONE
+            renderToc()
+            return
+        }
+        // 之前没在目录里定位到当前章（当前章在首页之后）：现在全量到了，重新定位并跳过去
+        if (!tocCurrentFound) {
+            renderToc()
+            return
+        }
+        // 当前这一页还有章节没显示出来（首页只到一半）→ 重画本页并保持滚动位置；否则只更新页码
+        // （「全部」模式走滚动懒加载，这里只更新页码，不重建列表）
+        if (tocPageEnd() > tocList.childCount) {
+            renderTocPage(restoreScrollY = tocScrollView.scrollY)
+        } else {
+            updateTocPagerOnly()
+        }
+    }
+
+    /** 只刷新分页条上的页码/按钮状态，不碰列表内容。 */
+    private fun updateTocPagerOnly() {
+        val totalPages = tocTotalPages()
+        if (totalPages > 0 && tocCurrentPage >= totalPages) tocCurrentPage = totalPages - 1
+        tocPagerBar.visibility = View.VISIBLE
+        tocPagerNavRow.visibility = if (totalPages > 1) View.VISIBLE else View.GONE
+        tocPageInfo.text = "${tocCurrentPage + 1} / $totalPages"
+        tocBtnPrevPage.alpha = if (tocCurrentPage > 0) 1f else 0.4f
+        tocBtnNextPage.alpha = if (tocCurrentPage < totalPages - 1) 1f else 0.4f
+        updatePageSizeButtons()
     }
 
     private fun loadToc() {
-        val baseUrl = currentUrl ?: run {
+        // 优先从「书页/目录页」起爬：从章节页起爬要先抓一次章节页找「目录」入口，白白多一个 RTT
+        val baseUrl = tocSourceUrl ?: currentUrl ?: run {
             Toast.makeText(this, "请先加载章节", Toast.LENGTH_SHORT).show()
             closeToc()
             return
@@ -783,7 +899,9 @@ class ReadingActivity : AppCompatActivity() {
         tocEmpty.visibility = View.GONE
         tocList.removeAllViews()
         lifecycleScope.launch {
-            when (val result = getToc(baseUrl)) {
+            val result = getToc(baseUrl)
+            if (isFinishing || isDestroyed) return@launch
+            when (result) {
                 is UrlLoader.ChapterListResult.Success -> {
                     tocLoading.visibility = View.GONE
                     currentUrl?.let { url ->
@@ -791,10 +909,14 @@ class ReadingActivity : AppCompatActivity() {
                         updatePrevFromToc(url)
                         updateNavButtons()
                     }
-                    if (result.items.isEmpty()) {
+                    if (chapterToc.isEmpty()) {
                         tocEmpty.visibility = View.VISIBLE
-                    } else {
+                    } else if (tocList.childCount == 0) {
+                        // 首页没能提前渲染（例如只能走 WebView 通道）时在这里补一次整表渲染
                         renderToc()
+                    } else {
+                        // 列表已由 publishTocFirstPage 画出来了，这里只把页码/总页数对齐
+                        updateTocPagerOnly()
                     }
                 }
                 is UrlLoader.ChapterListResult.Error -> {
@@ -818,6 +940,10 @@ class ReadingActivity : AppCompatActivity() {
                 (targetTitle.isNotBlank() && item.title == targetTitle)
             if (hit) { currentIdx = idx; break }
         }
+        // 记录定位结果：目录可能只加载了首页那一段，当前章若在更后面就定位不到，
+        // 等全量目录补齐后（onTocDataRefreshed）需要重新定位并跳过去。
+        tocCurrentFound = currentIdx >= 0
+        tocCurrentIndex = currentIdx
         // 定位到当前章节所在页
         if (currentIdx >= 0 && tocPageSize < chapterToc.size) {
             tocCurrentPage = currentIdx / tocPageSize
@@ -833,72 +959,64 @@ class ReadingActivity : AppCompatActivity() {
         return if (tocPageSize >= total) 1 else (total + tocPageSize - 1) / tocPageSize
     }
 
-    private fun renderTocPage() {
+    /** 目录列表总条数（本地/在线）。 */
+    private fun tocItemCount(): Int = if (isLocalBook) localChapters.size else chapterToc.size
+
+    /** 目录是否处于「分页」模式（选「全部」时为 false，走滚动懒加载）。 */
+    private fun isTocPageable(): Boolean {
+        val total = tocItemCount()
+        return total > 0 && tocPageSize < total
+    }
+
+    /** 分页模式下本页最后一项的下标（+1）；「全部」模式返回 0，表示不做「补齐本页」的重画。 */
+    private fun tocPageEnd(): Int {
+        if (!isTocPageable()) return 0
+        return minOf(tocCurrentPage * tocPageSize + tocPageSize, tocItemCount())
+    }
+
+    /**
+     * 渲染目录当前页。
+     * @param restoreScrollY 非 null 时表示「目录补齐后重画本页」：恢复原来的滚动位置，
+     *   而不是像首次打开那样自动居中到当前章（否则用户正看着的位置会被跳走）。
+     */
+    private fun renderTocPage(restoreScrollY: Int? = null) {
         tocList.removeAllViews()
         tocLoading.visibility = View.GONE
         tocEmpty.visibility = View.GONE
-        val density = resources.displayMetrics.density
-        val isLocal = isLocalBook
-        val total = if (isLocal) localChapters.size else chapterToc.size
+        val total = tocItemCount()
         val totalPages = tocTotalPages()
 
         // 限制页码范围
         if (tocCurrentPage < 0) tocCurrentPage = 0
         if (tocCurrentPage >= totalPages && totalPages > 0) tocCurrentPage = totalPages - 1
 
-        val start = if (tocPageSize >= total) 0 else tocCurrentPage * tocPageSize
-        val end = minOf(start + tocPageSize, total)
+        // 「全部」模式下不一次创建几千个 TextView（大书会直接卡住 2~3 秒），
+        // 先渲染一批，滚到底再追加下一批；但至少要渲染到「当前章」附近，否则打开目录会落在书首。
+        val pageable = tocPageSize < total
+        val start = if (pageable) tocCurrentPage * tocPageSize else 0
+        val end = if (pageable) {
+            minOf(start + tocPageSize, total)
+        } else {
+            val needCurrent = minOf(tocCurrentIndex + 1, TOC_ALL_INITIAL_MAX)
+            minOf(total, maxOf(start + TOC_RENDER_CHUNK, needCurrent))
+        }
 
         // 记录当前章对应的列表项，渲染完成后将其滚动到可见（居中）位置
         var currentItemView: TextView? = null
-
         for (idx in start until end) {
-            val title: CharSequence
-            val selected: Boolean
-            val onClick: () -> Unit
-            if (isLocal) {
-                val ch = localChapters[idx]
-                title = ch.title.ifBlank { "第 ${idx + 1} 章" }
-                selected = idx == localChapterIndex
-                onClick = {
-                    closeToc()
-                    if (idx != localChapterIndex) applyLocalChapter(idx)
-                }
-            } else {
-                val item = chapterToc[idx]
-                val highlightUrl = tocTargetUrl ?: currentUrl
-                title = item.title
-                // 同 renderToc：URL 匹配失败时用当前章节标题兜底，保证当前章被高亮。
-                selected = normUrl(item.url) == normUrl(highlightUrl ?: "") ||
-                    (currentChapterTitle.isNotBlank() && item.title == currentChapterTitle)
-                onClick = {
-                    tocTargetUrl = item.url
-                    closeToc()
-                    if (normUrl(item.url) != normUrl(currentUrl ?: "")) {
-                        loadChapter(item.url, isForward = true)
-                    }
-                }
-            }
-            val tv = TextView(this).apply {
-                text = title
-                textSize = 14f
-                setTextColor(ContextCompat.getColor(this@ReadingActivity, R.color.textPrimary))
-                setPadding((14 * density).toInt(), (14 * density).toInt(), (14 * density).toInt(), (14 * density).toInt())
-                if (selected) {
-                    setTypeface(null, Typeface.BOLD)
-                    setTextColor(ContextCompat.getColor(this@ReadingActivity, R.color.colorPrimary))
-                    background = ContextCompat.getDrawable(this@ReadingActivity, R.drawable.bg_toc_item_selected)
-                } else {
-                    background = ContextCompat.getDrawable(this@ReadingActivity, R.drawable.bg_toc_item)
-                }
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = (6 * density).toInt() }
-            }
-            tv.setOnClickListener { onClick() }
+            val (tv, selected) = buildTocItemView(idx)
             tocList.addView(tv)
             if (selected) currentItemView = tv
+        }
+        // 懒加载只对「全部」模式有意义；分页模式换页时要把监听清掉
+        if (pageable) {
+            tocScrollView.setOnScrollChangeListener(null)
+        } else {
+            tocScrollView.setOnScrollChangeListener { _, _, scrollY, _, _ ->
+                val last = tocList.getChildAt(tocList.childCount - 1) ?: return@setOnScrollChangeListener
+                val remaining = last.bottom - (scrollY + tocScrollView.height)
+                if (remaining < (1200 * resources.displayMetrics.density).toInt()) appendTocChunk()
+            }
         }
 
         // 更新分页控件：翻页导航仅在多页时显示；每页数目选择器始终可见，避免选「全部」后无法切回
@@ -912,6 +1030,10 @@ class ReadingActivity : AppCompatActivity() {
         // 打开目录时自动滚动到当前章：优先把当前章项居中；无当前项（如空目录）则回到顶部。
         // 用 post 确保在布局测量完成、各 item 的 top 已计算之后再滚动。
         tocScrollView.post {
+            if (restoreScrollY != null) {
+                tocScrollView.scrollTo(0, restoreScrollY)
+                return@post
+            }
             val v = currentItemView
             if (v != null) {
                 val target = (v.top + v.height / 2 - tocScrollView.height / 2).coerceAtLeast(0)
@@ -920,6 +1042,65 @@ class ReadingActivity : AppCompatActivity() {
                 tocScrollView.scrollTo(0, 0)
             }
         }
+    }
+
+    /** 「全部」模式滚到底部时追加下一批（复用已有视图，不重建整张列表）。 */
+    private fun appendTocChunk() {
+        val total = tocItemCount()
+        val from = tocList.childCount
+        if (from >= total) return
+        val to = minOf(from + TOC_RENDER_CHUNK, total)
+        for (idx in from until to) tocList.addView(buildTocItemView(idx).first)
+    }
+
+    /** 创建一个目录项；返回值第二项表示它是否是「当前章」（用于自动滚动居中）。 */
+    private fun buildTocItemView(idx: Int): Pair<TextView, Boolean> {
+        val density = resources.displayMetrics.density
+        val title: CharSequence
+        val selected: Boolean
+        val onClick: () -> Unit
+        if (isLocalBook) {
+            val ch = localChapters[idx]
+            title = ch.title.ifBlank { "第 ${idx + 1} 章" }
+            selected = idx == localChapterIndex
+            onClick = {
+                closeToc()
+                if (idx != localChapterIndex) applyLocalChapter(idx)
+            }
+        } else {
+            val item = chapterToc[idx]
+            val highlightUrl = tocTargetUrl ?: currentUrl
+            title = item.title
+            // 同 renderToc：URL 匹配失败时用当前章节标题兜底，保证当前章被高亮。
+            selected = normUrl(item.url) == normUrl(highlightUrl ?: "") ||
+                (currentChapterTitle.isNotBlank() && item.title == currentChapterTitle)
+            onClick = {
+                tocTargetUrl = item.url
+                closeToc()
+                if (normUrl(item.url) != normUrl(currentUrl ?: "")) {
+                    loadChapter(item.url, isForward = true)
+                }
+            }
+        }
+        val tv = TextView(this).apply {
+            text = title
+            textSize = 14f
+            setTextColor(ContextCompat.getColor(this@ReadingActivity, R.color.textPrimary))
+            setPadding((14 * density).toInt(), (14 * density).toInt(), (14 * density).toInt(), (14 * density).toInt())
+            if (selected) {
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(ContextCompat.getColor(this@ReadingActivity, R.color.colorPrimary))
+                background = ContextCompat.getDrawable(this@ReadingActivity, R.drawable.bg_toc_item_selected)
+            } else {
+                background = ContextCompat.getDrawable(this@ReadingActivity, R.drawable.bg_toc_item)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = (6 * density).toInt() }
+        }
+        tv.setOnClickListener { onClick() }
+        return tv to selected
     }
 
     private fun updatePageSizeButtons() {
@@ -997,16 +1178,29 @@ class ReadingActivity : AppCompatActivity() {
         }
         showLoading(true)
         val loader = UrlLoader(this)
+        // 该章的预取可能正在飞（用户在本章末尾快速翻页时几乎必然如此）：直接等它，
+        // 不要再发一次一模一样的请求 —— 否则预取白做，翻页还得从零等一个完整 RTT。
+        val inflight = chapterJobs[url]
         lifecycleScope.launch {
+            val prefetched = try {
+                inflight?.await()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            if (prefetched != null) {
+                applyFetchedChapter(url, prefetched, isForward, restoreSavedPosition)
+                return@launch
+            }
             when (val result = loader.loadUrl(url)) {
                 is UrlLoader.LoadResult.Success -> {
-                    val cached = CachedChapter(result.title, result.content, result.nextChapterUrl)
-                    chapterCache[url] = cached
-                    showLoading(false)
-                    applyChapter(cached, url, isForward)
-                    if (restoreSavedPosition) restorePosition()
-                    prefetchChapters(url, result.nextChapterUrl, prevChapters.lastOrNull())
-                    ensureTocLoaded(url)
+                    applyFetchedChapter(
+                        url,
+                        CachedChapter(result.title, result.content, result.nextChapterUrl),
+                        isForward,
+                        restoreSavedPosition
+                    )
                 }
                 is UrlLoader.LoadResult.Error -> {
                     showLoading(false)
@@ -1018,6 +1212,21 @@ class ReadingActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /** 章节到手后的统一收尾：入缓存、收起 loading、上屏、续读定位、预取相邻章、补目录。 */
+    private fun applyFetchedChapter(
+        url: String,
+        cached: CachedChapter,
+        isForward: Boolean,
+        restoreSavedPosition: Boolean
+    ) {
+        chapterCache[url] = cached
+        showLoading(false)
+        applyChapter(cached, url, isForward)
+        if (restoreSavedPosition) restorePosition()
+        prefetchChapters(url, cached.nextChapterUrl, prevChapters.lastOrNull())
+        ensureTocLoaded(url)
     }
 
     private fun applyChapter(cached: CachedChapter, url: String, isForward: Boolean = true) {
@@ -1093,7 +1302,7 @@ class ReadingActivity : AppCompatActivity() {
 
     private fun prefetchToc() {
         if (chapterToc.isNotEmpty()) return
-        val baseUrl = currentUrl ?: return
+        val baseUrl = tocSourceUrl ?: currentUrl ?: return
         lifecycleScope.launch {
             val result = getToc(baseUrl)
             if (result is UrlLoader.ChapterListResult.Success) {
@@ -1109,11 +1318,44 @@ class ReadingActivity : AppCompatActivity() {
 
     // 预取章节：只走轻量通道（OkHttp，快、不启 WebView）。
     // 不再回退完整 WebView 通道：后台起 WebView 会与前台翻章动画抢主线程，得不偿失；
-    // 预取失败就放弃，等用户真正翻章时由 loadChannel 正常加载。
+    // 预取失败就放弃，等用户真正翻章时由 loadChapter 正常加载。
+    //
+    // 章节抓取 single-flight（按 URL）：预取、翻章动画过渡内容、真正翻页三者共用同一个请求。
+    // 旧实现只在发起前查一次 chapterCache，两个入口同时发起时会把同一页下载两遍
+    // （预取刚发出、用户就翻页 → 真实翻页又重新请求一次，等于预取完全没用）。
+    // 全部调用点都在主线程，Map 不需要加锁。
+    private val chapterJobs = HashMap<String, Deferred<CachedChapter?>>()
+
+    /**
+     * 取（或发起）某章的轻量抓取任务。同一 URL 在飞期间只发一次请求；
+     * 任务结束即从表中移除（成功结果由调用方写入 [chapterCache]）。
+     */
+    private fun chapterJob(loader: UrlLoader, url: String): Deferred<CachedChapter?> {
+        chapterJobs[url]?.let { if (it.isActive) return it }
+        val job = lifecycleScope.async(start = CoroutineStart.LAZY) {
+            try {
+                fetchChapterForCache(loader, url)
+            } finally {
+                // 协程体跑在主线程，这里是「同一 URL 只有一个在飞任务」的收尾点
+                chapterJobs.remove(url)
+            }
+        }
+        chapterJobs[url] = job
+        job.start()
+        return job
+    }
+
     private suspend fun fetchChapterForCache(loader: UrlLoader, target: String): CachedChapter? {
-        return when (val r = loader.fetchChapterLight(target)) {
-            is UrlLoader.LoadResult.Success -> CachedChapter(r.title, r.content, r.nextChapterUrl)
-            else -> null
+        // 预取是"锦上添花"，任何异常都不该冒泡到协程作用域（那会直接闪退），一律当作"没取到"
+        return try {
+            when (val r = loader.fetchChapterLight(target)) {
+                is UrlLoader.LoadResult.Success -> CachedChapter(r.title, r.content, r.nextChapterUrl)
+                else -> null
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -1132,7 +1374,7 @@ class ReadingActivity : AppCompatActivity() {
         val loader = UrlLoader(this)
         for (target in targets) {
             lifecycleScope.launch {
-                val cached = fetchChapterForCache(loader, target) ?: return@launch
+                val cached = chapterJob(loader, target).await() ?: return@launch
                 storeCachedChapter(target, cached)
             }
         }
@@ -1159,7 +1401,7 @@ class ReadingActivity : AppCompatActivity() {
     private fun prefetchTransitionContent(url: String, isNext: Boolean) {
         val loader = UrlLoader(this)
         lifecycleScope.launch {
-            val cached = fetchChapterForCache(loader, url) ?: return@launch
+            val cached = chapterJob(loader, url).await() ?: return@launch
             storeCachedChapter(url, cached)
             // 仅当翻章间隙仍需要过渡内容时填充（动画已开始，填充后由 onDraw 的 chapterSwapPending 分支展示）
             if (isNext) readingView.setTransitionContent(cached.content)
@@ -1178,10 +1420,18 @@ class ReadingActivity : AppCompatActivity() {
                         is UrlLoader.LoadResult.Success -> {
                             showLoading(false)
                             prevChapters.clear()
+                            // 换了一本书：丢弃上一本的目录缓存与在途目录任务，
+                            // 否则目录的 single-flight 会把上一本的目录当成这本的
+                            chapterToc = emptyList()
+                            tocDeferred = null
+                            tocSourceUrl = null
+                            tocCurrentFound = false
+                            tocTargetUrl = null
                             val cached = CachedChapter(result.title, result.content, result.nextChapterUrl)
                             chapterCache[url] = cached
                             applyChapter(cached, url)
                             prefetchChapters(url, result.nextChapterUrl, null)
+                            ensureTocLoaded(url)
                         }
                         is UrlLoader.LoadResult.Error -> {
                             showLoading(false)
@@ -1268,6 +1518,65 @@ class ReadingActivity : AppCompatActivity() {
         settings.lastReadPosition = readingView.currentPage
         flushReadingTime()
         saveCurrentHistory()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // 保存"本次进程内"最新导航状态。进程在后台被系统杀掉后，Android 会用最初的
+        // Intent 重建本 Activity（extras 是启动时的快照、早已过期）。有了这份快照，
+        // restoreSavedInstanceState 才能把 intent 覆盖为最新值，避免回到很久前的阅读页。
+        readingView.commitCurrentPage()
+        outState.putBoolean(STATE_IS_LOCAL_BOOK, isLocalBook)
+        outState.putString(STATE_CURRENT_URL, currentUrl)
+        outState.putString(STATE_NEXT_CHAPTER, nextChapterUrl)
+        outState.putString(STATE_CURRENT_BOOK_TITLE, currentBookTitle)
+        if (isLocalBook) {
+            localFilePath?.let { outState.putString(STATE_LOCAL_FILE_PATH, it) }
+            outState.putString(STATE_LOCAL_TITLE, localBookTitle)
+            outState.putInt(STATE_LOCAL_CHAPTER_INDEX, localChapterIndex)
+        }
+        // 章节内位置（翻页=页码 / 滚动=百分比），与 saveCurrentHistory 写入 HistoryStore
+        // 的口径一致，restorePosition 据此还原页内定位
+        val position: Int
+        val totalPages: Int
+        if (settings.scrollMode) {
+            position = (readingView.scrollPercent * 100).toInt()
+            totalPages = 0
+        } else {
+            position = readingView.currentPage
+            totalPages = readingView.pageCount
+        }
+        outState.putInt(STATE_POSITION, position)
+        outState.putInt(STATE_TOTAL_PAGES, totalPages)
+        outState.putBoolean(STATE_SCROLL_MODE, settings.scrollMode)
+    }
+
+    /**
+     * 重建时用保存的最新导航状态覆盖 intent extras。
+     * 原因：进程被杀后 Android 用最初启动 Intent 重建，其 extras 是过期快照
+     * （EXTRA_URL/EXTRA_POSITION/EXTRA_LOCAL_CHAPTER 等仍是第一次打开时的值），
+     * 不覆盖会回到很久前的章节。这里统一改走"按 url 续读 / 本地书续读"分支。
+     */
+    private fun restoreSavedInstanceState(state: Bundle) {
+        // 仅在确有本类保存的导航状态时才恢复；否则保持 intent 原样（首次启动等场景）
+        if (!state.containsKey(STATE_CURRENT_URL) && !state.containsKey(STATE_LOCAL_FILE_PATH)) return
+        // 清掉"最初启动"intent 里的快照 extras，避免 loadContent 落入 content/bookUrl 分支
+        // 而回到很久前的章节
+        intent.removeExtra("EXTRA_CONTENT")
+        intent.removeExtra("EXTRA_BOOK_URL")
+        intent.removeExtra("EXTRA_BOOK_TITLE")
+        currentBookTitle = state.getString(STATE_CURRENT_BOOK_TITLE) ?: ""
+        intent.putExtra("EXTRA_POSITION", state.getInt(STATE_POSITION, 0))
+        intent.putExtra("EXTRA_TOTAL_PAGES", state.getInt(STATE_TOTAL_PAGES, 0))
+        intent.putExtra("EXTRA_SCROLL_MODE", state.getBoolean(STATE_SCROLL_MODE, settings.scrollMode))
+        if (state.getBoolean(STATE_IS_LOCAL_BOOK)) {
+            state.getString(STATE_LOCAL_FILE_PATH)?.let { intent.putExtra(EXTRA_LOCAL_FILE, it) }
+            intent.putExtra(EXTRA_LOCAL_TITLE, state.getString(STATE_LOCAL_TITLE) ?: "")
+            intent.putExtra(EXTRA_LOCAL_CHAPTER, state.getInt(STATE_LOCAL_CHAPTER_INDEX, 0))
+        } else if (state.containsKey(STATE_CURRENT_URL)) {
+            intent.putExtra("EXTRA_URL", state.getString(STATE_CURRENT_URL))
+            state.getString(STATE_NEXT_CHAPTER)?.let { intent.putExtra("EXTRA_NEXT_CHAPTER", it) }
+        }
     }
 
     override fun onStop() {
@@ -1358,6 +1667,10 @@ class ReadingActivity : AppCompatActivity() {
     /**
      * 打开本地 txt 书：读取缓存正文 → 按章节切分 → 定位到续读章节 → 设置内容。
      * 本地书无网络章节 URL，翻章即在 localChapters 间切换。
+     *
+     * 性能：整本正文常有几 MB，readText + 切章是纯 CPU/IO 的百毫秒级操作，
+     * 旧实现在 onCreate 里同步跑完 → 打开瞬间白屏、甚至 ANR 风险。
+     * 现在全部丢到 IO 线程（切章优先读 .idx 索引，见 LocalBookLoader.chaptersFor）。
      */
     private fun openLocalBook() {
         val path = intent.getStringExtra(EXTRA_LOCAL_FILE) ?: run {
@@ -1370,6 +1683,8 @@ class ReadingActivity : AppCompatActivity() {
         isLocalBook = true
         localBookTitle = intent.getStringExtra(EXTRA_LOCAL_TITLE) ?: ""
         localChapterIndex = intent.getIntExtra(EXTRA_LOCAL_CHAPTER, 0).coerceAtLeast(0)
+        // 本地书无在线目录，换源入口直接隐藏（不等正文加载完，避免栏上闪一下按钮）
+        tocChangeSource.visibility = View.GONE
 
         val file = File(path)
         if (!file.exists()) {
@@ -1377,16 +1692,33 @@ class ReadingActivity : AppCompatActivity() {
             finish()
             return
         }
-        localWholeText = file.readText()  // 默认 UTF-8（LocalBookLoader 写入时即 UTF-8）
-        localChapters = LocalBookLoader.splitChapters(localWholeText)
-        if (localChapters.isEmpty()) {
+        currentChapterTitle = localBookTitle.ifBlank { "加载中…" }
+        tvTitle.text = currentChapterTitle
+        showLoading(true)
+        lifecycleScope.launch {
+            val loaded = withContext(Dispatchers.IO) {
+                runCatching {
+                    val text = file.readText()  // 默认 UTF-8（LocalBookLoader 写入时即 UTF-8）
+                    text to LocalBookLoader.chaptersFor(file, text)
+                }.getOrNull()
+            }
+            if (isFinishing || isDestroyed) return@launch
+            if (loaded == null) {
+                showLoading(false)
+                Toast.makeText(this@ReadingActivity, "无法读取本地文件", Toast.LENGTH_SHORT).show()
+                finish()
+                return@launch
+            }
+            val (text, chapters) = loaded
+            localWholeText = text
             // 没有任何章节标题：把整本当作单章
-            localChapters = listOf(LocalChapter(localBookTitle.ifBlank { "全文" }, 0, localWholeText.length))
+            localChapters = chapters.ifEmpty {
+                listOf(LocalChapter(localBookTitle.ifBlank { "全文" }, 0, text.length))
+            }
+            localChapterIndex = localChapterIndex.coerceIn(0, localChapters.size - 1)
+            // applyLocalChapter 会在排版完成（onLayoutReady）里收起 loading，避免"暂无内容"闪一帧
+            applyLocalChapter(localChapterIndex, restore = true)
         }
-        localChapterIndex = localChapterIndex.coerceIn(0, localChapters.size - 1)
-        applyLocalChapter(localChapterIndex, restore = true)
-        // 本地书无在线目录，隐藏换源入口
-        tocChangeSource.visibility = View.GONE
     }
 
     /**
@@ -1401,14 +1733,17 @@ class ReadingActivity : AppCompatActivity() {
         currentChapterTitle = ch.title.ifBlank { "第 ${index + 1} 章" }
         currentBookTitle = localBookTitle
         currentUrl = localFilePath  // 让 saveCurrentHistory / 书架以文件路径为唯一键
+        // 空章（相邻两个标题挨着）不会触发布局，onLayoutReady 也就永不回调 —— 直接收起 loading，
+        // 否则打开书时那片 loading 会一直盖在"暂无内容"上。
+        if (chapterContent.isBlank()) showLoading(false)
         // 排版（relayout）完成后再定位：setContent 的折行是异步的，若在旧章 totalPages 上立即
         // setPage/续读定位，totalPages 会短暂偏小，被边界 clamp 拦截，表现为“无法翻页”。
         // 改为在 onLayoutReady（relayout 完成后、内容首次绘制前）里定位，保证 totalPages 已正确。
         // 续读→restorePosition；回翻上一章→末页；下一章/目录跳转→首页。
         readingView.onLayoutReady = when {
-            restore -> ({ restorePosition() })
-            startAtEnd -> ({ readingView.goToLastPage() })
-            else -> ({ readingView.setPage(0) })
+            restore -> ({ restorePosition(); showLoading(false) })
+            startAtEnd -> ({ readingView.goToLastPage(); showLoading(false) })
+            else -> ({ readingView.setPage(0); showLoading(false) })
         }
         readingView.setContent(chapterContent)
         tvTitle.text = currentChapterTitle
@@ -1445,6 +1780,8 @@ class ReadingActivity : AppCompatActivity() {
             return
         }
         // 定位到当前章节所在页（与在线目录一致的逻辑）
+        tocCurrentIndex = localChapterIndex
+        tocCurrentFound = localChapterIndex in localChapters.indices
         if (localChapterIndex >= 0 && tocPageSize < localChapters.size) {
             tocCurrentPage = localChapterIndex / tocPageSize
         } else {
@@ -1454,8 +1791,25 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     companion object {
+        // 「全部」模式下的懒加载批大小：一次最多创建这么多目录项，滚到底再追加
+        private const val TOC_RENDER_CHUNK = 250
+        // 「全部」模式下为了定位当前章，首批最多渲染到这么多项（再多就只渲第一批、落在书首）
+        private const val TOC_ALL_INITIAL_MAX = 600
+
         const val EXTRA_LOCAL_FILE = "EXTRA_LOCAL_FILE"
         const val EXTRA_LOCAL_TITLE = "EXTRA_LOCAL_TITLE"
         const val EXTRA_LOCAL_CHAPTER = "EXTRA_LOCAL_CHAPTER"
+
+        // onSaveInstanceState 的 key：进程被杀后重建时据这些值覆盖过期的 intent extras
+        private const val STATE_IS_LOCAL_BOOK = "state_is_local_book"
+        private const val STATE_CURRENT_URL = "state_current_url"
+        private const val STATE_NEXT_CHAPTER = "state_next_chapter"
+        private const val STATE_CURRENT_BOOK_TITLE = "state_current_book_title"
+        private const val STATE_LOCAL_FILE_PATH = "state_local_file_path"
+        private const val STATE_LOCAL_TITLE = "state_local_title"
+        private const val STATE_LOCAL_CHAPTER_INDEX = "state_local_chapter_index"
+        private const val STATE_POSITION = "state_position"
+        private const val STATE_TOTAL_PAGES = "state_total_pages"
+        private const val STATE_SCROLL_MODE = "state_scroll_mode"
     }
 }
