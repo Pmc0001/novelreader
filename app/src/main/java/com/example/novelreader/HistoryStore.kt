@@ -20,12 +20,41 @@ data class HistoryItem(
     val localChapter: Int = -1
 ) {
     companion object {
-        // 从章节 URL 提取小说标识：取文件所在的目录路径，同一本小说不同章节共享
+        // 从章节 URL 提取小说标识：取文件所在的目录路径，同一本小说不同章节共享。
+        // 注意：必须先去尾部斜杠 —— 「…/965388/102945727/」这种目录式章节链接若不去斜杠，
+        // lastIndexOf('/') 会落在结尾斜杠上，算出来还是章节自己的路径，同一本书就会越读越多条。
         fun keyOf(url: String): String {
-            val clean = url.substringBefore("?").substringBefore("#")
+            val clean = url.substringBefore("?").substringBefore("#").trimEnd('/')
             val lastSlash = clean.lastIndexOf('/')
             if (lastSlash <= 7) return clean  // 没有更深的目录则整条作为 key
             return clean.substring(0, lastSlash)
+        }
+
+        /**
+         * 同一本书的「规范去重键」。
+         *
+         * 旧版本把**章节 URL** 存成了 bookKey（…/html/965388/102945725），新版本存的是
+         * 书目录（…/html/965388），两者永远匹配不上 → 同一本书在历史里越翻越多。
+         * 这里统一按「章节 URL 去掉文件名」的书目录归并：
+         *  - 在线书且 URL 末段像章节（带扩展名 / 纯数字长号）→ 取上级目录；
+         *  - 末段像书籍 id（如 /book/123）或本身就是书页 → 保留 bookKey，避免把相邻两本书并成一本；
+         *  - 本地书用文件路径本身（唯一标识一本本地书）。
+         */
+        fun canonicalKey(url: String, bookKey: String): String {
+            if (url.isBlank()) return bookKey
+            if (!url.contains("://")) return bookKey.ifBlank { url }
+            val last = url.substringBefore('?').substringBefore('#').trimEnd('/').substringAfterLast('/')
+            val chapterLike = last.contains('.') || (last.length >= 6 && last.all { it.isDigit() })
+            return if (chapterLike) keyOf(url) else bookKey.ifBlank { url }
+        }
+
+        /** 两个 bookKey 是否指向同一本书：相等，或互为上下级目录（兼容旧数据的章节级 key）。 */
+        fun isSameBook(a: String, b: String): Boolean {
+            val x = a.trimEnd('/')
+            val y = b.trimEnd('/')
+            if (x.isEmpty() || y.isEmpty()) return false
+            if (x == y) return true
+            return x.startsWith("$y/") || y.startsWith("$x/")
         }
     }
 }
@@ -37,12 +66,12 @@ class HistoryStore(context: Context) {
 
     fun getHistory(): List<HistoryItem> {
         val raw = prefs.getString(KEY_HISTORY, null) ?: return emptyList()
-        return try {
+        val list = try {
             val arr = JSONArray(raw)
-            val list = mutableListOf<HistoryItem>()
+            val parsed = mutableListOf<HistoryItem>()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                list.add(
+                parsed.add(
                     HistoryItem(
                         title = o.getString("title"),
                         url = o.getString("url"),
@@ -56,18 +85,43 @@ class HistoryStore(context: Context) {
                     )
                 )
             }
-            list
+            parsed
         } catch (e: Exception) {
-            emptyList()
+            return emptyList()
         }
+        val deduped = dedupe(list)
+        // 旧数据里的重复项顺手落盘清掉（只在真的去重过时写一次，不会每次读都写盘）
+        if (deduped.size != list.size) save(deduped)
+        return deduped
+    }
+
+    /**
+     * 同一本书只留一条（保留最靠前 = 最近阅读的那条）。
+     * 归并依据是 [HistoryItem.canonicalKey]，能兼容「bookKey 存成章节 URL」的旧数据。
+     */
+    private fun dedupe(list: List<HistoryItem>): List<HistoryItem> {
+        if (list.size <= 1) return list
+        val out = ArrayList<HistoryItem>(list.size)
+        for (item in list) {
+            val key = HistoryItem.canonicalKey(item.url, item.bookKey)
+            val dup = out.any {
+                HistoryItem.canonicalKey(it.url, it.bookKey) == key ||
+                    HistoryItem.isSameBook(it.bookKey, item.bookKey)
+            }
+            if (!dup) out.add(item)
+        }
+        return out
     }
 
     fun addOrUpdate(item: HistoryItem, maxItems: Int = 10) {
         val list = getHistory().toMutableList()
-        // 同一本小说只保留一项：按 bookKey 去重；本地书 url 即为唯一 bookKey，
-        // 同时按 url 匹配，兼容旧数据中 bookKey 与 url 不一致的情形（自动去重合并）。
-        val idx = list.indexOfFirst { it.bookKey == item.bookKey || it.url == item.bookKey }
-        if (idx >= 0) list.removeAt(idx)
+        // 同一本小说只保留一项：按规范键去重（旧数据 bookKey 是章节 URL 也能命中），
+        // 再兜一层目录包含关系，避免「章节 key / 书目录 key」两种写法并存时又长出重复项。
+        val key = HistoryItem.canonicalKey(item.url, item.bookKey)
+        list.removeAll {
+            HistoryItem.canonicalKey(it.url, it.bookKey) == key ||
+                HistoryItem.isSameBook(it.bookKey, item.bookKey)
+        }
         list.add(0, item)
         while (list.size > maxItems) list.removeAt(list.size - 1)
         save(list)
@@ -75,7 +129,11 @@ class HistoryStore(context: Context) {
 
     fun remove(url: String) {
         val list = getHistory().toMutableList()
-        list.removeAll { it.url == url || it.bookKey == HistoryItem.keyOf(url) }
+        val key = HistoryItem.canonicalKey(url, HistoryItem.keyOf(url))
+        list.removeAll {
+            it.url == url || HistoryItem.canonicalKey(it.url, it.bookKey) == key ||
+                HistoryItem.isSameBook(it.bookKey, HistoryItem.keyOf(url))
+        }
         save(list)
     }
 
@@ -86,19 +144,23 @@ class HistoryStore(context: Context) {
     /** 在历史或书架里按 url/bookKey 命中一项，优先历史（最近阅读的有最新进度）。*/
     fun findByUrl(url: String): HistoryItem? {
         val key = HistoryItem.keyOf(url)
-        return getHistory().firstOrNull { it.url == url || it.bookKey == key }
-            ?: getShelf().firstOrNull { it.url == url || it.bookKey == key }
+        val canon = HistoryItem.canonicalKey(url, key)
+        fun List<HistoryItem>.match(): HistoryItem? = firstOrNull {
+            it.url == url || HistoryItem.canonicalKey(it.url, it.bookKey) == canon ||
+                HistoryItem.isSameBook(it.bookKey, key)
+        }
+        return getHistory().match() ?: getShelf().match()
     }
 
     // ===== 书架 / 收藏（独立于阅读历史，永久保留，无数量上限） =====
     fun getShelf(): List<HistoryItem> {
         val raw = prefs.getString(KEY_SHELF, null) ?: return emptyList()
-        return try {
+        val list = try {
             val arr = JSONArray(raw)
-            val list = mutableListOf<HistoryItem>()
+            val parsed = mutableListOf<HistoryItem>()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                list.add(
+                parsed.add(
                     HistoryItem(
                         title = o.getString("title"),
                         url = o.getString("url"),
@@ -112,33 +174,41 @@ class HistoryStore(context: Context) {
                     )
                 )
             }
-            list
+            parsed
         } catch (e: Exception) {
-            emptyList()
+            return emptyList()
         }
+        val deduped = dedupe(list)
+        if (deduped.size != list.size) saveShelf(deduped)
+        return deduped
     }
 
     fun addToShelf(item: HistoryItem) {
         val list = getShelf().toMutableList()
-        val idx = list.indexOfFirst { it.bookKey == item.bookKey || it.url == item.bookKey }
-        if (idx >= 0) list.removeAt(idx)
+        val key = HistoryItem.canonicalKey(item.url, item.bookKey)
+        list.removeAll {
+            HistoryItem.canonicalKey(it.url, it.bookKey) == key ||
+                HistoryItem.isSameBook(it.bookKey, item.bookKey)
+        }
         list.add(0, item)
         saveShelf(list)
     }
 
     fun removeFromShelf(bookKey: String) {
         val list = getShelf().toMutableList()
-        list.removeAll { it.bookKey == bookKey || it.url == bookKey }
+        list.removeAll { it.bookKey == bookKey || it.url == bookKey || HistoryItem.isSameBook(it.bookKey, bookKey) }
         saveShelf(list)
     }
 
     fun isInShelf(bookKey: String): Boolean =
-        getShelf().any { it.bookKey == bookKey || it.url == bookKey }
+        getShelf().any { it.bookKey == bookKey || it.url == bookKey || HistoryItem.isSameBook(it.bookKey, bookKey) }
 
     // 保持书架顺序（按加入时间），仅更新进度，不置顶
     fun updateShelfProgress(bookKey: String, position: Int, totalPages: Int, nextChapterUrl: String?, scrollMode: Boolean = false, chapterTitle: String = "", localChapter: Int = -1) {
         val list = getShelf().toMutableList()
-        val idx = list.indexOfFirst { it.bookKey == bookKey || it.url == bookKey }
+        val idx = list.indexOfFirst {
+            it.bookKey == bookKey || it.url == bookKey || HistoryItem.isSameBook(it.bookKey, bookKey)
+        }
         if (idx < 0) return
         // 本地书续读章节索引：传入有效下标才覆盖，否则保留既有值（避免把已存的章节清成 -1）。
         val lc = if (localChapter >= 0) localChapter else list[idx].localChapter

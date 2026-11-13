@@ -9,7 +9,9 @@ import java.security.MessageDigest
 data class CachedChapter(
     val title: String,
     val content: String,
-    val nextChapterUrl: String?
+    val nextChapterUrl: String?,
+    // 章节页上解析出的「上一章」链接。旧缓存文件里没有这个字段，读出来是 null，兼容。
+    val prevChapterUrl: String? = null
 )
 
 /**
@@ -57,6 +59,9 @@ class ChapterCache(private val context: Context, private val bookKey: String) {
             if (chapter.nextChapterUrl != null) {
                 put("nextChapterUrl", chapter.nextChapterUrl)
             }
+            if (chapter.prevChapterUrl != null) {
+                put("prevChapterUrl", chapter.prevChapterUrl)
+            }
             put("url", url)
         }
         chapterFile(url).writeText(json.toString())
@@ -71,7 +76,8 @@ class ChapterCache(private val context: Context, private val bookKey: String) {
             CachedChapter(
                 title = json.getString("title"),
                 content = json.getString("content"),
-                nextChapterUrl = json.optString("nextChapterUrl", "").takeIf { it.isNotBlank() }
+                nextChapterUrl = json.optString("nextChapterUrl", "").takeIf { it.isNotBlank() },
+                prevChapterUrl = json.optString("prevChapterUrl", "").takeIf { it.isNotBlank() }
             )
         } catch (_: Exception) {
             // 损坏缓存：删除并忽略
@@ -82,6 +88,11 @@ class ChapterCache(private val context: Context, private val bookKey: String) {
 
     /** 判断一章是否已缓存 */
     fun contains(url: String): Boolean = chapterFile(url).exists()
+
+    /** 删除单章缓存（内容被判定为坏数据时用，删掉才能重新抓） */
+    fun remove(url: String) {
+        runCatching { chapterFile(url).delete() }
+    }
 
     /** 本节已缓存章数 */
     val count: Int
@@ -95,6 +106,22 @@ class ChapterCache(private val context: Context, private val bookKey: String) {
     fun clear() {
         cacheDir.listFiles()?.forEach { it.delete() }
         cacheDir.delete()
+    }
+
+    /**
+     * 控制本节落盘的章节数，超出部分按「最久未更新」删除。
+     *
+     * 磁盘缓存是「加速层」不是「收藏夹」：阅读时每翻一章都会写一份 JSON，
+     * 不设上限的话长期使用会无感涨到几十 MB。按 lastModified 淘汰即可 ——
+     * 正在读的章节刚写过，永远是最新的那一批。
+     */
+    fun trimTo(maxFiles: Int) {
+        if (maxFiles <= 0) return
+        val files = cacheDir.listFiles()?.filter { it.name.endsWith(".json") } ?: return
+        if (files.size <= maxFiles) return
+        files.sortedBy { it.lastModified() }
+            .take(files.size - maxFiles)
+            .forEach { runCatching { it.delete() } }
     }
 
     // -- 工具 --
@@ -151,6 +178,34 @@ class ChapterCache(private val context: Context, private val bookKey: String) {
             val root = File(context.filesDir, "novel_cache")
             if (!root.exists()) return 0
             return root.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        }
+
+        /**
+         * 全局磁盘上限。超出后按「最后修改时间」从旧到新删，直到降到上限的 80%。
+         *
+         * 必须要有这一层：单本 400 章只约束了「一本书」，用户读十几本书就是十几倍，
+         * 长期用下去能涨到几百 MB。缓存是加速层，不该无限占用用户的存储。
+         */
+        fun enforceGlobalLimit(context: Context, maxBytes: Long) {
+            if (maxBytes <= 0) return
+            val root = File(context.filesDir, "novel_cache")
+            if (!root.exists()) return
+            val files = mutableListOf<File>()
+            var total = 0L
+            root.walkTopDown().forEach { f ->
+                if (f.isFile && f.name.endsWith(".json")) {
+                    total += f.length()
+                    files.add(f)
+                }
+            }
+            if (total <= maxBytes) return
+            val target = (maxBytes * 8 / 10).coerceAtLeast(1)
+            files.sortBy { it.lastModified() }
+            for (f in files) {
+                if (total <= target) break
+                val len = f.length()
+                if (runCatching { f.delete() }.getOrDefault(false)) total -= len
+            }
         }
 
         /** 清空所有离线缓存 */

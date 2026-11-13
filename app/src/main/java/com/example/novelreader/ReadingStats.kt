@@ -57,6 +57,17 @@ object ReadingStats {
         mutate(today()) { it.chapters += 1 }
     }
 
+    /**
+     * 一次翻章同时记字数与章节数。
+     * 翻章是阅读路径上最敏感的时刻，合并成一次「读 JSON → 改 → 写 JSON」，少一次全量序列化。
+     */
+    fun addChapterRead(chars: Int) {
+        mutate(today()) {
+            if (chars > 0) it.chars += chars
+            it.chapters += 1
+        }
+    }
+
     fun getDay(date: String): DayStat = loadAll()[date] ?: DayStat()
 
     fun getToday(): DayStat = getDay(today())

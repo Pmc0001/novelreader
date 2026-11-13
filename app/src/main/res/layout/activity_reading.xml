@@ -280,6 +280,7 @@
         android:elevation="8dp">
 
         <LinearLayout
+            android:id="@+id/toc_drawer_header"
             android:layout_width="match_parent"
             android:layout_height="60dp"
             android:orientation="horizontal"

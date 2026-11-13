@@ -42,6 +42,9 @@ class ReadingView @JvmOverloads constructor(
 
     private var allLines: List<LineEntry> = emptyList()
     private var linesPerPage: Int = 0
+    // 每页首行在 allLines 中的下标。分页按「行高 + 段间距」逐行累加得出（见 paginate），
+    // 不能再用「总高 ÷ 行高」估行数，否则段间距漏算会把最后几行顶出屏底留白。
+    private var pageStarts: List<Int> = listOf(0)
     var currentPage: Int = 0
         private set
     private var totalPages: Int = 0
@@ -340,11 +343,9 @@ class ReadingView @JvmOverloads constructor(
             }
             if (newLines.size >= limit) break
         }
-        transitionNextLines = if (newLines.size > linesPerPage) {
-            newLines.subList(0, linesPerPage)
-        } else {
-            newLines
-        }
+        // 与正式分页同一套规则：段间距也算进高度，取「第一屏」而不是固定 linesPerPage 行
+        val firstPageEnd = paginate(newLines).getOrElse(1) { newLines.size }
+        transitionNextLines = newLines.subList(0, firstPageEnd.coerceIn(0, newLines.size))
     }
 
     fun setTransitionPrevContent(text: String) {
@@ -361,9 +362,8 @@ class ReadingView @JvmOverloads constructor(
                 newLines.add(LineEntry(line, index == 0))
             }
         }
-        // 取上一章的真实最后一页（与 linesForPage 计算方式一致，末页可能不足一页）
-        val lastPage = (newLines.size - 1) / linesPerPage
-        val startLine = lastPage * linesPerPage
+        // 取上一章的真实最后一页（与正式分页同一套规则，末页可能不足一屏）
+        val startLine = paginate(newLines).last().coerceIn(0, newLines.size)
         transitionPrevLines = newLines.subList(startLine, newLines.size)
     }
 
@@ -567,13 +567,18 @@ class ReadingView @JvmOverloads constructor(
             return
         }
 
-        val paddingV = SCREEN_PADDING_V_DP * density
-        val paragraphGap = fontSize * density * PARAGRAPH_SPACING
-        // 可用高度 = 总高 - 屏顶留白 - 屏底留白 - 最后一行 descent 缓冲
-        // 不然最后一行 baseline+descent 会延伸到 paddingBottom 区内，被栏/屏底切字
-        val usableHeight = height - paddingTop - paddingBottom - paddingV * 2f - lineHeight * 0.3f
-        linesPerPage = maxOf(1, (usableHeight / lineHeight).toInt())
-        totalPages = maxOf(1, (allLines.size + linesPerPage - 1) / linesPerPage)
+        // 分页必须逐行累加「行高 + 段间距」，不能再用 height/lineHeight 估行数：
+        // 每段首行还要额外让出 paragraphGap，短段一多（对话体、目录式文本）就会顶穿
+        // 屏底留白，最后几行被屏幕边缘切掉。规则与 drawPageAt 完全一致。
+        pageStarts = paginate(allLines)
+        totalPages = maxOf(1, pageStarts.size)
+        // 单页最多行数（供过渡页预排版做上限，段间距只会让每页行数变少）
+        var maxLines = 1
+        for (i in pageStarts.indices) {
+            val end = if (i + 1 < pageStarts.size) pageStarts[i + 1] else allLines.size
+            maxLines = maxOf(maxLines, end - pageStarts[i])
+        }
+        linesPerPage = maxLines
 
         if (pendingStartPage >= 0) {
             currentPage = pendingStartPage.coerceIn(0, totalPages - 1)
@@ -622,10 +627,45 @@ class ReadingView @JvmOverloads constructor(
     }
 
     private fun linesForPage(page: Int): List<LineEntry> {
-        if (page < 0 || page >= totalPages) return emptyList()
-        val startLine = page * linesPerPage
-        val endLine = minOf(startLine + linesPerPage, allLines.size)
-        return if (startLine < allLines.size) allLines.subList(startLine, endLine) else emptyList()
+        if (page < 0 || page >= totalPages || pageStarts.isEmpty()) return emptyList()
+        val startLine = pageStarts[page].coerceIn(0, allLines.size)
+        val endLine = (if (page + 1 < pageStarts.size) pageStarts[page + 1] else allLines.size)
+            .coerceIn(startLine, allLines.size)
+        return if (startLine < endLine) allLines.subList(startLine, endLine) else emptyList()
+    }
+
+    /**
+     * 计算分页，返回每页首行在 [lines] 中的下标（升序，首元素恒为 0）。
+     *
+     * 逐行模拟 [drawPageAt] 的绘制推进：每段首行额外让出 [PARAGRAPH_SPACING] 的段间距，
+     * 页首行不加（绘制时按页内 index>0 判断）。这样最后一行 baseline+descent 一定落在
+     * height - paddingBottom - SCREEN_PADDING_V 之内，不会再压到底部留白/屏底被切字。
+     */
+    private fun paginate(lines: List<LineEntry>): List<Int> {
+        if (lines.isEmpty() || height <= 0) return listOf(0)
+        val lineHeight = fontSize * lineSpacing * density
+        val paragraphGap = fontSize * density * PARAGRAPH_SPACING
+        val descent = fontSize * density * 0.3f
+        // 页内首行 baseline（与 drawPageAt 完全一致）
+        val firstBaseline = paddingTop + SCREEN_PADDING_V_DP * density + fontSize * density
+        // 正文可绘制底线：屏底留白（paddingBottom）与 SCREEN_PADDING_V 都要让出来
+        val bottomLimit = height - paddingBottom - SCREEN_PADDING_V_DP * density
+
+        val starts = ArrayList<Int>()
+        starts.add(0)
+        var baseline = firstBaseline
+        for (i in 1 until lines.size) {
+            var nextBaseline = baseline + lineHeight
+            if (lines[i].isParagraphStart) nextBaseline += paragraphGap
+            // 放不下就翻页：新页首行回到页顶，段间距不计（与绘制规则一致）
+            if (nextBaseline + descent > bottomLimit) {
+                starts.add(i)
+                baseline = firstBaseline
+            } else {
+                baseline = nextBaseline
+            }
+        }
+        return starts
     }
 
     /**

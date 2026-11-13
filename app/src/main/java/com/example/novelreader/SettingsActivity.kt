@@ -554,6 +554,8 @@ class SettingsActivity : AppCompatActivity() {
                 .setMessage("确定要清空所有已缓存的章节吗？\n\n清空后，离线时将无法阅读未缓存的内容。")
                 .setPositiveButton("清空") { _, _ ->
                     ChapterCache.clearAll(this)
+                    // 目录缓存也一并清掉：它只是「打开目录秒出」的加速层，清完下次重新抓即可
+                    TocStore.clearAll(this)
                     refreshCacheInfo()
                     Toast.makeText(this, "已清空所有缓存", Toast.LENGTH_SHORT).show()
                 }
