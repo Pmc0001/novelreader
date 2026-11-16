@@ -115,9 +115,66 @@ class UrlLoader(private val context: Context) {
                 "net::ERR", "ERR_CONNECTION", "ERR_NAME_NOT_RESOLVED", "ERR_INTERNET_DISCONNECTED",
                 "ERR_ADDRESS_UNREACHABLE", "ERR_TIMED_OUT", "ERR_SSL", "ERR_EMPTY_RESPONSE",
                 "Webpagenotavailable", "Thissitecan'tbereached", "Checkyourconnection",
-                "Thispageisn'tworking", "找不到网页"
+                "Thispageisn'tworking", "找不到网页",
+                // 站点自己的 404（IIS/Nginx 默认页）：标题常只剩「Server Error」，
+                // 正文一看就不是小说，但长度一样很短，不挡就会当成一章存下来。
+                "ServerError", "Fileordirectorynotfound", "Theresourceyouarelookingfor",
+                "404NotFound", "页面不存在", "章节不存在", "内容不存在", "该章节已删除"
             )
             return keys.any { t.contains(it, ignoreCase = true) }
+        }
+
+        /**
+         * 判断抓到的「正文」其实是一整页**目录**（章节列表），而不是章节正文。
+         *
+         * 触发场景（真实踩到过）：不少站点的**第一章**页脚「上一章」直接指向书的目录页
+         * （如 `https://www.sudugu.cc/1543/`）。这页被当成一章抓下来后：
+         *   1. 正文就是几百行「第x章 标题」，用户「翻上一页」看到的就是一整页章节名；
+         *   2. 目录页上的「下一页」又被当成「下一章」，于是能在目录分页之间一路翻下去
+         *      （/1543/ → /1543/2 → /1543/3）；
+         *   3. 一旦落盘缓存，这章永远是目录，翻来翻去都是它。
+         *
+         * 判据：行数够多 + 绝大多数行都像章节标题 + 平均行长很短。
+         * 真实正文是被换行切开的**段落**（每行几十字），只有目录页才是「短行、全是章名」。
+         */
+        // 目录页里「一行一个章节名」的判定（逐行匹配，^ 即行首）
+        private val catalogLineRe = Regex(
+            "(?i)(第\\s*[0-9０-９〇零一二三四五六七八九十百千万两]{1,12}\\s*[章回卷篇节集部话])" +
+                "|^(?:chapter|ch|part|episode|ep|vol)[\\s.\\-]*[0-9]{1,5}" +
+                "|^\\s*[0-9]{1,5}\\s*[、.．:：,，]" +
+                "|^\\s*(?:番外|楔子|序章|序幕|尾声|后记|外传|上架感言)"
+        )
+
+        internal fun looksLikeCatalogPage(text: String, title: String = ""): Boolean {
+            val lines = text.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+            if (lines.size < 8) return false
+            var hit = 0
+            var chars = 0
+            for (line in lines) {
+                chars += line.length
+                if (line.length <= 40 && catalogLineRe.containsMatchIn(line)) hit++
+            }
+            val ratio = hit.toFloat() / lines.size
+            val avgLen = chars.toFloat() / lines.size
+            return ratio >= 0.6f && avgLen <= 30f
+        }
+
+        /**
+         * [candidate] 是不是 [currentUrl] 的**上级页面**（书的目录/主页），而不是章页。
+         *
+         * 目录页永远是章节页的祖先路径：`/1543/` 之于 `/1543/1283559.html`。
+         * 这类链接被当成「上一章」时会翻出整页章节名，所以解析、入栈、加载三处都要挡掉。
+         */
+        internal fun isBookRootLink(candidate: String, currentUrl: String): Boolean {
+            fun pathOf(u: String): String? = try {
+                Uri.parse(u).path?.trimEnd('/')?.takeIf { it.isNotEmpty() }
+            } catch (_: Exception) {
+                null
+            }
+            val cp = pathOf(candidate) ?: return false
+            val cur = pathOf(currentUrl) ?: return false
+            if (cp == cur) return true
+            return cp.length < cur.length && cur.startsWith("$cp/")
         }
 
         // ===== 轻量通道的「站点记忆」=====
@@ -194,7 +251,10 @@ class UrlLoader(private val context: Context) {
             "#booktxt", "#booktext", "#nr", "#nr1", ".nr", ".showtxt",
             "div.content", ".content", "#content", "div.chaptercontent", ".chaptercontent",
             "#chaptercontent", "article", ".article", "#article", "div.read", ".read", "#read",
-            "div.txt", ".txt", ".booktext", ".read-content", ".novel-content", ".chapter-content"
+            "div.txt", ".txt", ".booktext", ".read-content", ".novel-content", ".chapter-content",
+            // 速读谷系（sudugu 家族）的正文容器就叫 .con；WebView 层的候选里早就有 #con/.con，
+            // 放在队尾保持低优先级，候选打分规则见 extractContentFromDoc。
+            "div.con", ".con"
         )
 
         private val BLOCK_TAGS = setOf(
@@ -221,6 +281,79 @@ class UrlLoader(private val context: Context) {
         private val SENTENCE_END_CHARS = setOf(
             '。', '！', '？', '…', '”', '』', '」', '’', '.', '!', '?', '"'
         )
+
+        // ===== 搜索页「在阅读页打开当前页」的页面 HTML 直传（零网络复用） =====
+        // 搜索页的 WebView 已经把页面渲染好了：整页 HTML 按 URL 放在进程内直传给阅读页
+        // —— 不走 Intent（几百 KB 很容易撞上 Binder ~1MB 的事务上限），也不落盘。
+        // 阅读页第一次解析这一页时（正文提取 / 目录首页）取走即弃，省掉「把刚看过的
+        // 页面重新下载一遍」的一次往返。只留最近一次：同时只有一本书在打开中。
+        private val loadedHtmlByUrl = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        /** 阅读页取走某个 URL 的直传 HTML（一次性，取走即清） */
+        private fun consumeLoadedHtml(url: String): String? = loadedHtmlByUrl.remove(url)
+
+        /** 搜索页放入待直传的 HTML；覆盖上一次，避免无人消费时越积越多 */
+        fun putLoadedHtml(url: String, html: String) {
+            loadedHtmlByUrl.clear()
+            loadedHtmlByUrl[url] = html
+        }
+
+        /**
+         * 分片读出 WebView 当前已加载页面的 HTML（**必须在主线程调用**，回调也在主线程）。
+         *
+         * 分片而不是一次 `outerHTML`：整页常有几百 KB，单次 evaluateJavascript 把它当一个
+         * 字符串回传既慢又有撑爆 IPC 消息的风险。超过 [maxBytes] 直接放弃（回调 null），
+         * 调用方退回「按 URL 走网络」的原路径 —— 快通道拿不到就慢一点，不会坏。
+         */
+        fun captureLoadedHtml(
+            webView: WebView,
+            maxBytes: Int = 1_500_000,
+            callback: (String?) -> Unit
+        ) {
+            val chunk = 200_000
+            fun eval(script: String, onResult: (String?) -> Unit) {
+                try {
+                    webView.evaluateJavascript(script) { raw ->
+                        onResult(if (raw == null || raw == "null") null else raw)
+                    }
+                } catch (e: Exception) {
+                    onResult(null)
+                }
+            }
+            // evaluateJavascript 的字符串结果是 JSON 编码的（带引号与转义），按 JSON 解出来
+            fun decodeString(raw: String?): String? = try {
+                org.json.JSONTokener(raw).nextValue() as? String
+            } catch (_: Exception) {
+                null
+            }
+            eval("document.documentElement.outerHTML.length") { raw ->
+                val len = raw?.trim()?.toIntOrNull()
+                if (len == null || len <= 0 || len > maxBytes) {
+                    callback(null)
+                    return@eval
+                }
+                val sb = StringBuilder(len)
+                var pos = 0
+                fun nextChunk() {
+                    if (pos >= len) {
+                        callback(sb.toString())
+                        return
+                    }
+                    val end = minOf(pos + chunk, len)
+                    eval("document.documentElement.outerHTML.substring($pos,$end)") { r ->
+                        val part = decodeString(r)
+                        if (part == null) {
+                            callback(null)
+                            return@eval
+                        }
+                        sb.append(part)
+                        pos = end
+                        nextChunk()
+                    }
+                }
+                nextChunk()
+            }
+        }
     }
 
     // 轻量 HTTP 通道（OkHttp 单例 + Jsoup 解析），用于搜索/章节/目录的快速尝试，避免每次都起 WebView。
@@ -304,7 +437,9 @@ class UrlLoader(private val context: Context) {
             val bookTitle: String? = null,
             // 章节页上解析出的「上一章」。旧行为只解析「下一章」，导致从目录直接跳章后
             // 回翻栈为空、按钮变灰 —— 明明页面上就有「上—章」链接却没被用上。
-            val prevChapterUrl: String? = null
+            val prevChapterUrl: String? = null,
+            // 章内分页是否抓全：false 表示正文只拿到前几页（超时/被拦），调用方不能落盘
+            val complete: Boolean = true
         ) : LoadResult()
         data class Error(val message: String) : LoadResult()
     }
@@ -341,7 +476,11 @@ class UrlLoader(private val context: Context) {
         // 常常先命中顶部导航的「下一章」→ 被当成跨章链接直接 break → 每章只抓到第 1 页。
         val nextCandidates: List<String> = emptyList(),
         // 页面上的「上一章」候选（不含「上一页」分页链接）
-        val prevCandidates: List<String> = emptyList()
+        val prevCandidates: List<String> = emptyList(),
+        // 「上一页」型章内分页候选（只认页级词，绝不含「上一章」）。
+        // 盗版站把一章的第 2/3…页也列进目录（「第40章 xxx（2/2）」）时，从这种条目
+        // 直接进入本章中间页：只向后翻页会把本章开头整页丢掉，靠它向前补齐。
+        val prevPageCandidates: List<String> = emptyList()
     )
 
     /**
@@ -640,6 +779,23 @@ class UrlLoader(private val context: Context) {
                                 }
                             }
                         }
+                        // 单独收集「上一页」型章内分页链接（只认页级词，「上一章」绝不能算进来）：
+                        // 从目录的 (2/2) 分部条目直接落到本章中间页时，只向后翻会把开头整页丢掉，
+                        // 收集起来交给 Kotlin 沿链向前补齐。
+                        var pprevs=[];
+                        var pprevRe=/上一页|上一頁|上页|上頁|prev page|previous page/i;
+                        for(var k4=0;k4<links.length;k4++){
+                            var lt4=normTxt((links[k4].textContent||'')+' '+(links[k4].getAttribute('title')||''));
+                            if(pprevRe.test(lt4)){
+                                var href4=links[k4].getAttribute('href')||'';
+                                if(href4 && href4.indexOf('javascript:')!==0){
+                                    try{
+                                        var nu4=new URL(href4, location.href).href;
+                                        if(nu4.split('#')[0]!==location.href.split('#')[0] && pprevs.indexOf(nu4)<0) pprevs.push(nu4);
+                                    }catch(e4){}
+                                }
+                            }
+                        }
                         var dt=document.title||'';
                         var bl=document.body?document.body.innerHTML.length:0;
                         var bd=document.body?document.body.innerText:'';
@@ -647,7 +803,7 @@ class UrlLoader(private val context: Context) {
                         var bdl=(bd||'').toLowerCase();
                         var cf=0;
                         if(dtl.indexOf('just a moment')>=0 || dtl.indexOf('attention required')>=0 || bdl.indexOf('enable javascript and cookies')>=0 || bdl.indexOf('checking your browser')>=0){ cf=1; }
-                        return JSON.stringify({t:t,x:x,next:next,nexts:nexts,prevs:prevs,total:total,dt:dt,bl:bl,cf:cf});
+                        return JSON.stringify({t:t,x:x,next:next,nexts:nexts,prevs:prevs,pprevs:pprevs,total:total,dt:dt,bl:bl,cf:cf});
                     })()"""
                     webView.evaluateJavascript(js) { raw ->
                         if (cont.isActive) cont.resume(parsePage(raw))
@@ -720,8 +876,35 @@ class UrlLoader(private val context: Context) {
             // 用「实际加载成功的那个 URL」算章节基准：换过协议后若还用原 URL 的 base，
             // 页面上 https 的分页链接会被判成「不同章」，结果只抓到第 1 页 —— 正文就少了一大截。
             val originalBase = chapterBase(effectiveUrl)
-            val sb = StringBuilder(first.content)
-            var title = first.title
+            // ===== 章内分页「从中间页进入」时向前补齐（与轻量通道同一套规则）=====
+            // 盗版站常把一章的第 2/3…页也列成目录条目（「第40章 xxx（2/2）」→ xxx-2.html），
+            // 从这种条目进来时若只向后翻页，本章开头那一页会整页丢失。这里沿「上一页」
+            // 链回到第 1 页，把前面的页拼到正文前面，标题也换成第 1 页的。
+            val backPages = mutableListOf<Pair<String, PageData>>() // 页序：第 1 页在前
+            var backCurUrl = effectiveUrl
+            var backCur = first
+            val backVisited = mutableSetOf(normPageKey(effectiveUrl))
+            var wvBackTruncated = false
+            while (backPages.size < 8) {
+                val prev = pickPrevPageLink(backCur.prevPageCandidates, backCurUrl, originalBase, backVisited) ?: break
+                if (!backVisited.add(normPageKey(prev))) { wvBackTruncated = true; break }
+                try {
+                    navigate(prev)
+                } catch (e: TimeoutCancellationException) {
+                    Log.d("UrlLoader", "back navigate timeout: $prev")
+                    wvBackTruncated = true
+                    break
+                }
+                val p = waitForContent()
+                if (p.content.isBlank()) { wvBackTruncated = true; break }
+                backPages.add(0, prev to p)
+                backCur = p
+                backCurUrl = prev
+            }
+            val sb = StringBuilder()
+            for ((_, p) in backPages) sb.append(p.content).append(PAGE_SEP)
+            sb.append(first.content)
+            var title = backPages.firstOrNull()?.second?.title?.takeIf { it.isNotBlank() } ?: first.title
             var idx = 1
             var total = first.totalPages
             var guard = 0
@@ -729,15 +912,25 @@ class UrlLoader(private val context: Context) {
             // 一旦这条是「下一章」就会 break，只留下第 1 页（用户看到的就是"这章少了一截"）。
             var next: String? = pickSameChapterPage(first.nextCandidates, originalBase)
             var nextChapterUrl: String? = pickNextChapter(first.nextCandidates, originalBase)
-            // 第 1 页上的「上一章」才是真正的上一章（后几页只有「上一页」分页链接）
-            val prevChapterUrl: String? = pickPrevChapter(first.prevCandidates, originalBase)
+            // 第 1 页上的「上一章」才是真正的上一章（中间页只有「上一页」分页链接，没有「上一章」）
+            val prevChapterUrl: String? = pickPrevChapter(
+                (backPages.firstOrNull()?.second ?: first).prevCandidates,
+                backPages.firstOrNull()?.first ?: effectiveUrl
+            )
             val visitedPages = mutableSetOf(normPageKey(effectiveUrl))
+            backPages.forEach { visitedPages.add(normPageKey(it.first)) }
 
+            // 章内分页有没有抓全（同轻量通道）：残章不能落盘，否则永远缺那一页；
+            // 向前补齐中途断链（第 1 页没抓到）同样算残章
+            var wvTruncated = wvBackTruncated
             while (guard < 30) {
                 val page = next?.takeIf { it.isNotBlank() } ?: break
                 guard++
                 if (total != null && idx >= total) break
-                if (!visitedPages.add(normPageKey(page))) break
+                if (!visitedPages.add(normPageKey(page))) {
+                    wvTruncated = true
+                    break
+                }
                 navigate(page)
                 val p = waitForContent()
                 Log.d("UrlLoader", "page$idx len=${p.content.length} next=${p.nextPage} dt=[${p.docTitle}] bl=${p.bodyLen}")
@@ -748,6 +941,7 @@ class UrlLoader(private val context: Context) {
                     if (nextChapterUrl.isNullOrBlank()) {
                         nextChapterUrl = pickNextChapter(p.nextCandidates, originalBase)
                     }
+                    wvTruncated = true
                     break
                 }
                 if (total == null && p.totalPages != null) total = p.totalPages
@@ -758,7 +952,11 @@ class UrlLoader(private val context: Context) {
                     nextChapterUrl = pickNextChapter(p.nextCandidates, originalBase)
                 }
                 next = pickSameChapterPage(p.nextCandidates, originalBase)
+                // 自然结束（这一页没有再指向同章下一页）→ 说明抓全了；
+                // 向前补齐若中途断链，该信号要一直保留到最终判定
+                if (next == null) wvTruncated = wvBackTruncated
             }
+            if (guard >= 30 && next != null) wvTruncated = true
 
             if (sb.isBlank()) {
                 Log.d("UrlLoader", "result: EMPTY dt=[${first.docTitle}] bl=${first.bodyLen}")
@@ -772,15 +970,21 @@ class UrlLoader(private val context: Context) {
                 if (looksLikeErrorPage(cleaned, title)) {
                     Log.d("UrlLoader", "result looks like browser error page, reject")
                     LoadResult.Error("网页无法打开（页面返回的是浏览器错误页）")
+                } else if (looksLikeCatalogPage(cleaned, title)) {
+                    Log.d("UrlLoader", "result looks like catalog page, reject url=$effectiveUrl")
+                    LoadResult.Error("这一页是章节目录，不是正文")
                 } else {
                     // WebView 已经把站点 cookie 拿到手了：落盘 + 交给后续的轻量请求复用，
                     // 这样同一个站点后面的章节就不必再起 WebView
                     flushCookies()
                     LoadResult.Success(
-                        title = title.ifBlank { "未知标题" },
+                        // 展示标题剥掉结尾的章内页码标记（「(2)」「（1 / 2）」），
+                        // 目录里的分部条目不再把页码当标题的一部分带进阅读页
+                        title = stripTitlePageMarker(title.ifBlank { "未知标题" }),
                         content = cleaned,
                         nextChapterUrl = nextChapterUrl,
-                        prevChapterUrl = prevChapterUrl
+                        prevChapterUrl = prevChapterUrl,
+                        complete = !wvTruncated
                     )
                 }
             }
@@ -1394,6 +1598,37 @@ class UrlLoader(private val context: Context) {
             val allLinks = first.first.toMutableList()
             Log.d("UrlLoader", "chapterList: page1 layer=${first.third} links=${allLinks.size} pages=${first.second.size}")
 
+            // 把一批原始链接整理成可展示的目录：过滤导航/分页假条目、按 URL 去重、按章节号排序。
+            fun isUsableTocItem(item: ChapterItem): Boolean {
+                val raw = item.title.trim()
+                return !tocNavTitleRe.containsMatchIn(raw) &&
+                    !tocNavTitleRe.containsMatchIn(stripInvisibleWs(raw)) &&
+                    !tocNavTitleRe.containsMatchIn(navNorm(raw))
+            }
+
+            fun usableTocItems(src: List<ChapterItem>): List<ChapterItem> {
+                val out = ArrayList<ChapterItem>(src.size)
+                val seenUrl = HashSet<String>(src.size * 2)
+                for (item in src) {
+                    if (!isUsableTocItem(item)) continue
+                    if (seenUrl.add(item.url)) out.add(item)
+                }
+                return sortChapterItems(out)
+            }
+
+            // 关键：目录首页一到手就回吐给调用方，让它立刻去抓第一章。
+            // WebView 兜底通道原来只把首页拿去爬后面几十页分页，整条目录爬完才肯加载正文；
+            // 大书实测要 70 秒以上，用户只能一直盯着 LOADING。首页章节已经足够开始阅读，
+            // 后续分页继续在后台补齐即可。
+            var firstPagePublished = false
+            if (onFirstPage != null) {
+                val firstPageItems = usableTocItems(allLinks)
+                if (firstPageItems.size >= 3) {
+                    firstPagePublished = true
+                    runCatching { onFirstPage.invoke(firstPageItems) }
+                }
+            }
+
             val initialPages = first.second.map { it.substringBefore('#') }.distinct()
             val concurrentLinks = if (initialPages.isNotEmpty()) crawlTocPages(initialPages) else emptyList()
             if (concurrentLinks.isEmpty() && initialPages.isNotEmpty()) {
@@ -1424,25 +1659,16 @@ class UrlLoader(private val context: Context) {
 
             // 过滤纯导航/分页链接（如「上一页/下一页」「上—章」「返 回 目 录」等反爬变体），
             // 避免它们被当成章节混进目录；原始标题与归一化标题任一命中即过滤。
-            val usableLinks = allLinks.filter {
-                val raw = it.title.trim()
-                !tocNavTitleRe.containsMatchIn(raw) &&
-                    !tocNavTitleRe.containsMatchIn(stripInvisibleWs(raw)) &&
-                    !tocNavTitleRe.containsMatchIn(navNorm(raw))
+            val sorted = usableTocItems(allLinks)
+            val filteredCount = allLinks.count { !isUsableTocItem(it) }
+            if (filteredCount > 0) {
+                Log.d("UrlLoader", "chapterList: filtered $filteredCount nav/pagination links")
             }
-            if (usableLinks.size < allLinks.size) {
-                Log.d("UrlLoader", "chapterList: filtered ${allLinks.size - usableLinks.size} nav/pagination links")
+            // 首页条目不足、直到整条目录抓完才达到展示条件时，这里补一次首章回调，
+            // 避免「目录已经有内容，但页面还停在 LOADING」。
+            if (!firstPagePublished && sorted.isNotEmpty()) {
+                runCatching { onFirstPage?.invoke(sorted) }
             }
-
-            val seen = mutableSetOf<String>()
-            val deduped = mutableListOf<ChapterItem>()
-            for (item in usableLinks) {
-                if (seen.add(item.url)) deduped.add(item)
-            }
-
-            // 排序：优先按章节号（兼容中文数字），无章节号的按 URL 数字，再兜底保持文档顺序。
-            // 顶部「最新章节预览」块（倒序）也会被归位到正确位置。
-            val sorted = sortChapterItems(deduped)
 
             Log.d("UrlLoader", "chapterList total=${sorted.size} (deduped from ${allLinks.size}, layer=${first.third})")
             if (sorted.isEmpty()) {
@@ -1720,6 +1946,10 @@ class UrlLoader(private val context: Context) {
         return Regex("""(\d+)""").findAll(last).lastOrNull()?.value?.toLongOrNull()
     }
 
+    // 「(1/2)」「（1/2）」这类章内页码提示：有的站点把它写在标题/正文里，
+    // 但翻页链接是纯数字或 JS 按钮。用它来判断"这章还有没有没抓到的页"。
+    private val pageIndicatorRe = Regex("""[(（]\s*(\d+)\s*[/／]\s*(\d+)\s*[)）]""")
+
     private fun chapterBase(url: String): String {
         // 兼容目录式章节地址（如 /html/{book}/{chapter}/ 以“/”结尾，lastPathSegment 为空）：
         // 先去掉结尾斜杠再取最后一段，保证「134660050_2/」与「134660050/」归一到同一章基名，
@@ -1734,6 +1964,79 @@ class UrlLoader(private val context: Context) {
         return base
     }
 
+    /**
+     * 从 URL 里推断「这是本章的第几页」。
+     *
+     * 覆盖常见的章内分页写法：`xxx_2.html`、`xxx-2.html`、`xxx_2/`、`/123/2.html`、
+     * `xxx.html?page=2`。取不到就返回 null（说明这个 URL 没有页码信息）。
+     */
+    private fun pageIndex(url: String): Int? {
+        val noHash = url.substringBefore('#')
+        Regex("""[?&](?:page|p|pg|pn|pageno)=(\d+)""", RegexOption.IGNORE_CASE)
+            .find(noHash)?.let { return it.groupValues[1].toIntOrNull() }
+        val path = noHash.substringBefore('?').trimEnd('/')
+        val last = path.substringAfterLast('/')
+        Regex("""[_-](\d{1,3})(?:\.[a-z]+)?$""", RegexOption.IGNORE_CASE)
+            .find(last)?.let { return it.groupValues[1].toIntOrNull() }
+        // 目录式：/123/2/ 或 /123/2.html
+        val segs = path.split('/').filter { it.isNotEmpty() }
+        if (segs.size >= 2) {
+            val cur = segs.last().substringBefore('.')
+            if (cur.length <= 3 && cur.all { it.isDigit() } && segs[segs.size - 2].any { it.isDigit() }) {
+                return cur.toIntOrNull()
+            }
+        }
+        return null
+    }
+
+    /**
+     * 章内分页的**兜底识别**：不依赖链接文字，只看 URL。
+     *
+     * 为什么需要：很多站点的翻页链接文字就是纯数字（`<a href="165369_2.html">2</a>`）
+     * 或者一个箭头/图标，用「下一页」这种文字匹配根本抓不到 —— 表现就是
+     * 正文只拿到第 1 页、后面几页静默丢失（用户看到"这章少了一截"）。
+     * 这里把所有「URL 基名与当前章相同、但不是当前页」的链接（含 select 选项、
+     * onclick 里的地址）都收集起来，再按推断出的页码找"下一页"。
+     */
+    private fun guessNextChapterPage(
+        doc: org.jsoup.nodes.Document,
+        currentUrl: String,
+        base: String
+    ): String? {
+        val self = normPageKey(currentUrl)
+        val curIdx = pageIndex(currentUrl) ?: 1
+        var best: Pair<Int, String>? = null
+        val seen = HashSet<String>()
+
+        fun consider(href: String?) {
+            if (href.isNullOrBlank()) return
+            val h = href.trim()
+            if (h.startsWith("#")) return
+            if (h.lowercase().startsWith("javascript:")) {
+                // onclick="location.href='/14/165369_2.html'" 这类：把里面的地址抠出来
+                Regex("""['"]([^'"]+\.(?:html?|php|aspx?))['"]""", RegexOption.IGNORE_CASE)
+                    .find(h)?.let { consider(it.groupValues[1]) }
+                return
+            }
+            val abs = try {
+                java.net.URL(java.net.URL(currentUrl), h).toString()
+            } catch (_: Exception) {
+                return
+            }
+            val key = normPageKey(abs)
+            if (key == self || !seen.add(key)) return
+            if (chapterBase(abs) != base) return
+            val idx = pageIndex(abs) ?: return
+            if (idx <= curIdx) return
+            if (best == null || idx < best!!.first) best = idx to abs
+        }
+
+        for (a in doc.select("a")) consider(a.attr("href"))
+        // 有些站点用下拉框翻页（和目录分页一样）
+        for (o in doc.select("select option")) consider(o.attr("value"))
+        return best?.second
+    }
+
     /** 同章分页链接（与当前章 URL 基名相同）：优先翻它，才能把整章抓全。 */
     private fun pickSameChapterPage(candidates: List<String>, base: String): String? =
         candidates.firstOrNull { it.isNotBlank() && chapterBase(it) == base }
@@ -1743,8 +2046,16 @@ class UrlLoader(private val context: Context) {
         candidates.firstOrNull { it.isNotBlank() && chapterBase(it) != base }
 
     /** 「上一章」入口（基名必须不同，章内分页的「上一页」会被排除） */
-    private fun pickPrevChapter(candidates: List<String>, base: String): String? =
-        candidates.firstOrNull { it.isNotBlank() && chapterBase(it) != base }
+    private fun pickPrevChapter(candidates: List<String>, currentUrl: String): String? {
+        val base = chapterBase(currentUrl)
+        return candidates.firstOrNull { c ->
+            c.isNotBlank() &&
+                chapterBase(c) != base &&
+                // 第一章的「上一章」常常直接指向书的目录页（/1543/），那不是章节：
+                // 抓下来会是整页章节名，绝不能进回翻栈。
+                !isBookRootLink(c, currentUrl)
+        }
+    }
 
     private fun normPageKey(u: String): String = u.substringBefore('#').trimEnd('/')
 
@@ -1802,6 +2113,12 @@ class UrlLoader(private val context: Context) {
                     arr.optString(i, "").takeIf { it.isNotBlank() }?.let { prevs.add(it) }
                 }
             }
+            val pprevs = mutableListOf<String>()
+            obj.optJSONArray("pprevs")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    arr.optString(i, "").takeIf { it.isNotBlank() }?.let { pprevs.add(it) }
+                }
+            }
             PageData(
                 title = obj.optString("t", ""),
                 content = obj.optString("x", ""),
@@ -1811,7 +2128,8 @@ class UrlLoader(private val context: Context) {
                 bodyLen = obj.optInt("bl", 0),
                 isChallenge = obj.optInt("cf", 0) == 1,
                 nextCandidates = nexts,
-                prevCandidates = prevs
+                prevCandidates = prevs,
+                prevPageCandidates = pprevs
             )
         } catch (_: Exception) {
             PageData("", inner, "", null)
@@ -1922,44 +2240,151 @@ class UrlLoader(private val context: Context) {
             val firstDoc = docOrNull ?: return@withTimeout LoadResult.Error("轻量抓取失败")
             if (isCloudflareChallenge(firstDoc)) return@withTimeout LoadResult.Error("轻量抓取遇到反爬验证")
             val originalBase = chapterBase(effectiveUrl)
-            val title = extractChapterTitle(firstDoc)
-            val sb = StringBuilder(extractContentFromDoc(firstDoc))
+            // ===== 章内分页「从中间页进入」时向前补齐 =====
+            // 盗版站常把一章的第 2/3…页也列成目录条目（「第40章 xxx（2/2）」→ xxx-2.html），
+            // 从这种条目进来时若只向后翻页，本章开头那一页会整页丢失 —— 用户看到的正是
+            // 「这章少了开头一大截」。这里沿「上一页」链回到第 1 页，把前面的页拼进正文。
+            val backPages = mutableListOf<Triple<String, org.jsoup.nodes.Document, String>>() // 页序：第 1 页在前
+            var backCurUrl = effectiveUrl
+            var backCurDoc = firstDoc
+            val backVisited = mutableSetOf(normPageKey(effectiveUrl))
+            var backTruncated = false
+            while (backPages.size < 8) {
+                val prev = pickPrevPageLink(findPrevPageLinks(backCurDoc, backCurUrl), backCurUrl, originalBase, backVisited) ?: break
+                if (remaining() < MIN_PAGE_FETCH_MS) { backTruncated = true; break }
+                if (!backVisited.add(normPageKey(prev))) { backTruncated = true; break }
+                var pDoc: org.jsoup.nodes.Document? = null
+                for (attempt in 0..1) {
+                    if (attempt > 0) {
+                        if (remaining() < MIN_PAGE_FETCH_MS) break
+                        delay(250)
+                    }
+                    pDoc = try { lightFetchDoc(prev, pageTimeout()) } catch (_: Exception) { null }
+                    if (pDoc != null && !isCloudflareChallenge(pDoc)) break
+                    pDoc = null
+                }
+                val pd = pDoc
+                if (pd == null) { backTruncated = true; break }
+                val pc = extractContentFromDoc(pd)
+                if (pc.isBlank()) { backTruncated = true; break }
+                backPages.add(0, Triple(prev, pd, pc))
+                backCurUrl = prev
+                backCurDoc = pd
+            }
+            // 标题取第 1 页（中间页标题常带“(2)”页码残留）；残章判定用原始标题（(1/2) 信号不能丢）
+            val rawTitle = extractChapterTitle(backPages.firstOrNull()?.second ?: firstDoc)
+            val title = stripTitlePageMarker(rawTitle)
+            val sb = StringBuilder()
+            for (bp in backPages) sb.append(bp.third).append(PAGE_SEP)
+            sb.append(extractContentFromDoc(firstDoc))
             // 跟随章内分页（"下一页"指向同章第 2、3… 页），保持轻量通道完整且快速；
             // 当"下一页"跨入下一章（URL 基础名不同）时停止，并将其作为 nextChapterUrl。
             // 同章分页优先；跨章链接单独记下来作为「下一章」，不再因为"第一条是下一章"而提前收工。
             val firstCands = findNextLinks(firstDoc, effectiveUrl)
             var nextPage: String? = pickSameChapterPage(firstCands, originalBase)
             var nextChapterUrl: String? = pickNextChapter(firstCands, originalBase)
-            val prevChapterUrl: String? = pickPrevChapter(findPrevLinks(firstDoc, effectiveUrl), originalBase)
+            // 「上一章」取第 1 页上的链接（中间页只有「上一页」分页链接，没有「上一章」）
+            val pageOneDoc = backPages.firstOrNull()?.second ?: firstDoc
+            val pageOneUrl = backPages.firstOrNull()?.first ?: effectiveUrl
+            val prevChapterUrl: String? = pickPrevChapter(findPrevLinks(pageOneDoc, pageOneUrl), pageOneUrl)
             val visited = mutableSetOf(normPageKey(effectiveUrl))
+            backPages.forEach { visited.add(normPageKey(it.first)) }
             var guard = 0
+            // 章内分页有没有抓全：中途任何一步失败而后面还有分页，就算「残章」；
+            // 向前补齐中途断链（第 1 页没抓到）同样算残章，绝不落盘
+            var truncated = backTruncated
             while (guard < 15) {
                 val page = nextPage?.takeIf { it.isNotBlank() } ?: break
-                if (!visited.add(normPageKey(page))) break
-                // 预算已耗尽：后面的分页直接放弃，用已抓到的正文返回
-                if (remaining() < MIN_PAGE_FETCH_MS) break
-                guard++
-                val pDoc = try {
-                    lightFetchDoc(page, pageTimeout())
-                } catch (e: Exception) {
+                if (!visited.add(normPageKey(page))) {
+                    truncated = true
                     break
                 }
-                if (isCloudflareChallenge(pDoc)) break
-                val pc = extractContentFromDoc(pDoc)
-                if (pc.isBlank()) break
+                // 预算已耗尽：后面的分页直接放弃，用已抓到的正文返回（但标记为残章）
+                if (remaining() < MIN_PAGE_FETCH_MS) {
+                    truncated = true
+                    break
+                }
+                guard++
+                var pDoc: org.jsoup.nodes.Document? = null
+                // 单页失败重试一次：分页链接往往是站点的"慢接口"，一次超时很常见，
+                // 直接放弃就会让这一页正文永久缺失
+                for (attempt in 0..1) {
+                    if (attempt > 0) {
+                        if (remaining() < MIN_PAGE_FETCH_MS) break
+                        delay(250)
+                    }
+                    pDoc = try {
+                        lightFetchDoc(page, pageTimeout())
+                    } catch (e: Exception) {
+                        null
+                    }
+                    if (pDoc != null && !isCloudflareChallenge(pDoc)) break
+                    pDoc = null
+                }
+                val doc = pDoc
+                if (doc == null) {
+                    truncated = true
+                    break
+                }
+                val pc = extractContentFromDoc(doc)
+                Log.d("UrlLoader", "page ext len=${pc.length} url=$page")
+                if (pc.isBlank()) {
+                    truncated = true
+                    break
+                }
                 sb.append(PAGE_SEP).append(pc)
-                val cands = findNextLinks(pDoc, page)
+                val cands = findNextLinks(doc, page)
                 if (nextChapterUrl.isNullOrBlank()) nextChapterUrl = pickNextChapter(cands, originalBase)
-                nextPage = pickSameChapterPage(cands, originalBase)
+                // 先按「下一页」文字找；找不到再按 URL 结构兜底（页码写成纯数字的站点）
+                var np = pickSameChapterPage(cands, originalBase)
+                    ?: guessNextChapterPage(doc, page, originalBase)
+                nextPage = np
+                // 自然结束（这一页没有再指向同章下一页）→ 说明抓全了；
+                // 向前补齐若中途断链（第 1 页没拿到），该信号要一直保留到最终判定
+                truncated = backTruncated || (np != null)
+                if (np == null) {
+                    // 纯诊断：标题里带「(1/2)」但翻不到下一页。
+                    // 注意很多站点的标题在每一页都写着 (1/2)（它是整章的标签，不是当前页），
+                    // 所以这里**只记日志、不判定残缺** —— 判定只认"有没有翻页失败"。
+                    val m = pageIndicatorRe.find(rawTitle)
+                    val cur = m?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    val total = m?.groupValues?.get(2)?.toIntOrNull() ?: 0
+                    if (cur in 1 until total) {
+                        Log.d("UrlLoader", "chapter label ($cur/$total), stopped at: $page")
+                    }
+                }
             }
+            if (guard >= 15 && nextPage != null) truncated = true
+            // 只拿到第 1 页、但标题标明这章有多页（如「第三十八章 回校（1/2）」）→ 残章。
+            // 这类正文绝不能落盘，否则整章的后半段就永远消失了。
+            // 判定必须用原始标题：展示标题已剥掉页码标记，(1/2) 信号就没了。
+            if (!truncated && guard == 0) {
+                val m = pageIndicatorRe.find(rawTitle)
+                val cur = m?.groupValues?.get(1)?.toIntOrNull() ?: 1
+                val total = m?.groupValues?.get(2)?.toIntOrNull() ?: 1
+                if (total > 1 && cur == 1) {
+                    Log.d("UrlLoader", "chapter incomplete: only page 1 of $total url=$effectiveUrl")
+                    truncated = true
+                }
+            }
+            Log.d(
+                "UrlLoader",
+                "chapter light pages=${guard + 1} back=${backPages.size} raw=${sb.length} truncated=$truncated url=$effectiveUrl"
+            )
             val content = sanitizeContent(sb.toString(), title)
             if (content.isBlank()) return@withTimeout LoadResult.Error("轻量抓取正文为空")
             // 与 WebView 通道同一道闸：错误页不能被当成正文（否则会污染缓存）
             if (looksLikeErrorPage(content, title)) {
                 return@withTimeout LoadResult.Error("轻量抓取遇到错误页")
             }
+            // 再一道闸：整页都是「第x章 标题」→ 这是目录页（常见于第一章的「上一章」指向书目录）。
+            // 绝不能当正文返回：它会顶掉真正的一章，还会被缓存/预取，越翻越深。
+            if (looksLikeCatalogPage(content, title)) {
+                Log.d("UrlLoader", "reject catalog page url=$effectiveUrl title=[$title]")
+                return@withTimeout LoadResult.Error("这一页是章节目录，不是正文")
+            }
             val bookTitle = extractBookTitleFromDocTitle(firstDoc)
-            LoadResult.Success(title, content, nextChapterUrl, bookTitle, prevChapterUrl)
+            LoadResult.Success(title, content, nextChapterUrl, bookTitle, prevChapterUrl, !truncated)
         }
     }
 
@@ -1979,17 +2404,110 @@ class UrlLoader(private val context: Context) {
     )
 
     /**
+     * 从「WebView 已经渲染好」的页面 HTML 里直接提一章正文（**零网络**）。
+     *
+     * 搜索页菜单「在阅读页打开当前页」专用：页面本来就在搜索 WebView 里，再走 loadUrl
+     * 等于把同一个 URL 重新下载解析一遍（1~3 个串行 RTT，反爬站还要退回 WebView 等十几秒）。
+     * 这里用与轻量通道**同一套** Jsoup 提取逻辑（容器候选、清洗、上下章链接、错误页/目录页
+     * 判别），结果与正常联网抓同源。
+     *
+     * 返回 null = 这一页不能当正文复用（目录页/书页/搜索结果页、错误页、章内分页只拿到当前
+     * 这一页），调用方退回原来的「传 URL 走网络」路径。判据一律从紧：宁可慢一点，
+     * 也绝不把半章或一整页目录写进缓存（落盘后就再也不会重新请求了）。
+     */
+    fun extractChapterFromLoadedHtml(html: String, url: String): LoadResult? {
+        val doc = try {
+            Jsoup.parse(html, url)
+        } catch (e: Exception) {
+            return null
+        }
+        if (isCloudflareChallenge(doc)) return null
+        val base = chapterBase(url)
+        // 1) 章内分页：这一页只是本章的 1/N 页，直接复用会把残章写进缓存（后半截永远补不回）
+        val cands = findNextLinks(doc, url)
+        if (pickSameChapterPage(cands, base) != null) return null
+        if (pickPrevPageLink(findPrevPageLinks(doc, url), url, base, emptySet()) != null) return null
+        // 2) 页面上要有真正的「上一章/下一章」：目录页、书页、搜索引擎结果页都没有
+        val next = pickNextChapter(cands, base)
+        val prev = pickPrevChapter(findPrevLinks(doc, url), url)
+        if (next == null && prev == null) return null
+        // 3) 正文提取 + 与联网通道完全相同的三道闸（空正文 / 错误页 / 整页目录）
+        val title = stripTitlePageMarker(extractChapterTitle(doc))
+        val content = sanitizeContent(extractContentFromDoc(doc), title)
+        if (content.length < 200) return null
+        if (looksLikeErrorPage(content, title)) return null
+        if (looksLikeCatalogPage(content, title)) return null
+        // 4) 页面主体几乎全是链接文字（目录/搜索结果/书页排版多变，上面几闸可能漏）→ 不是正文
+        if (linkTextRatio(doc) > 0.45f) return null
+        return LoadResult.Success(
+            title = title.ifBlank { "未知标题" },
+            content = content,
+            nextChapterUrl = next,
+            bookTitle = extractBookTitleFromDocTitle(doc),
+            prevChapterUrl = prev,
+            complete = true
+        )
+    }
+
+    /**
+     * 「链接文字 / 全文」的比例：目录页、搜索结果页、书页几乎整页都是链接文字，
+     * 真实正文里链接只是零星词句（书名、人名内链）。比 looksLikeCatalogPage 更早一步
+     * 挡住「非章节、但排版也不像标准目录」的页面（典型如搜索引擎结果页）。
+     *
+     * 走一遍和 [collectText] 相同的规则（nav/header/footer/广告等外壳整块跳过、
+     * 章节正文里的内链照算）：外壳被跳过后它的链接文字也不能计进 links，
+     * 否则带大侧栏导航的正常章节页会被误判成"整页都是链接"。
+     */
+    private fun linkTextRatio(doc: org.jsoup.nodes.Document): Float {
+        val body = doc.body() ?: return 1f
+        var all = 0
+        var links = 0
+        fun walk(n: org.jsoup.nodes.Node, inLink: Boolean) {
+            if (n is org.jsoup.nodes.TextNode) {
+                val len = n.wholeText.length
+                if (len > 0) {
+                    all += len
+                    if (inLink) links += len
+                }
+                return
+            }
+            val childInLink: Boolean
+            if (n is org.jsoup.nodes.Element) {
+                if (isJunkElement(n)) return
+                childInLink = inLink || n.tagName().equals("a", ignoreCase = true)
+            } else {
+                childInLink = inLink
+            }
+            for (c in n.childNodes()) walk(c, childInLink)
+        }
+        walk(body, false)
+        if (all <= 0) return 1f
+        return links.toFloat() / all
+    }
+
+    /**
      * 抓目录首页（在 [LIGHT_FETCH_TIMEOUT_MS] 预算内）。
      * 传入的 url 往往是「章节页」而非目录页：先尝试直接解析，拿不到足够章节再在页内找
      * 「目录/开始阅读/全部章节」入口并抓取目录页。
      */
     private suspend fun fetchTocHead(url: String): TocHead? = withContext(Dispatchers.IO) {
         withTimeout(LIGHT_FETCH_TIMEOUT_MS) {
-            val firstDoc = try {
-                lightFetchDoc(url)
-            } catch (e: Exception) {
-                return@withTimeout null
-            }
+            // 搜索页直传过来的页面 HTML（同 URL 取一次即弃）：解析这一页本身零网络，
+            // 只有「要另找目录入口 / 继续抓分页」时才发请求。没有直传就按原样联网抓。
+            val handed = consumeLoadedHtml(url)
+            val firstDoc = (if (handed != null) {
+                try {
+                    Jsoup.parse(handed, url)
+                } catch (e: Exception) {
+                    null
+                }
+            } else {
+                try {
+                    lightFetchDoc(url)
+                } catch (e: Exception) {
+                    null
+                }
+            }) ?: return@withTimeout null
             if (isCloudflareChallenge(firstDoc)) return@withTimeout null
             var catalogUrl = url
             var items = extractChapterListFromDoc(firstDoc, url)
@@ -2043,22 +2561,40 @@ class UrlLoader(private val context: Context) {
         // 别让并发的目录分页把首屏正文挤慢（目录本来就在后台，用户看不见）。
         if (onFirstPage != null) delay(350)
 
+        // 重号的书（多卷各自从第 1 章编号）只能靠「目录页的先后」来定顺序：
+        // 这种情况不能断点续抓 —— 补抓到的页会被追加到列表末尾，顺序立刻乱掉。
+        // 所以每次都从第一页顺抓一遍重建顺序（已抓到的按 URL 去重，不会重复）。
+        val rebuildOrder = hasDuplicateNumbering(baseItems)
+        val base = if (rebuildOrder) emptyList() else baseItems
         // 断点续抓：从上次停下的那一页继续（缓存里可能已经有几百章，不必每页都重抓）
-        val startIdx = resumeFrom
+        val startIdx = if (rebuildOrder) 0 else resumeFrom
             ?.let { r -> head.pages.indexOfFirst { it == r } }
             ?.takeIf { it >= 0 } ?: 0
         val queue = if (startIdx == 0) head.pages else head.pages.subList(startIdx, head.pages.size)
         Log.d(
             "UrlLoader",
             "toc pages=${head.pages.size} start=$startIdx queue=${queue.size} " +
-                "base=${baseItems.size} resume=$resumeFrom"
+                "base=${base.size} rebuild=$rebuildOrder resume=$resumeFrom"
         )
 
-        val merged = ArrayList<ChapterItem>(baseItems.size + head.items.size + 256)
+        val merged = ArrayList<ChapterItem>(base.size + head.items.size + 256)
         val seen = HashSet<String>(merged.size + 512)
+        // 防御：缓存里的目录有可能根本不属于这本书（站点用 ?id=xxx 区分书籍时，
+        // tocKey 会撞成同一个；或者用户换过书源）。两本书的章节混在一起，表现就是
+        // 「同一个章节号出现好几次、名字却不一样」，翻下一章也会串书。
+        // 合并前先用 URL 的"书目录"校验一遍，不像同一本书就整份丢掉重建。
+        var usableBase = base
+        if (base.isNotEmpty() && head.items.isNotEmpty()) {
+            val dir = HistoryItem.keyOf(head.items.first().url)
+            val same = base.count { HistoryItem.keyOf(it.url) == dir }
+            if (dir.isNotBlank() && same * 10 < base.size * 8) {
+                Log.d("UrlLoader", "toc cache belongs to another book: ${same}/${base.size}, dropped")
+                usableBase = emptyList()
+            }
+        }
         // 以「已经抓到的章节」为底，再接上这次首页解析出来的 —— 断点续抓只补后面几页，
         // 不能把前面已有的章节丢掉（否则越续越少）
-        for (c in baseItems) if (seen.add(c.url)) merged.add(c)
+        for (c in usableBase) if (seen.add(c.url)) merged.add(c)
         for (c in head.items) if (seen.add(c.url)) merged.add(c)
         // 记录「抓失败的分页」：整批成功但个别页超时时不能当作已完成 ——
         // 那一页的 20 章会永久缺失，用户看到的目录会中间断几段。
@@ -2199,7 +2735,12 @@ class UrlLoader(private val context: Context) {
     private suspend fun crawlTocPages(urls: List<String>): List<ChapterItem> = coroutineScope {
         val collected = mutableListOf<ChapterItem>()
         val visited = mutableSetOf<String>()
-        val queue = ArrayDeque(urls.filter { visited.add(it) })
+        // 起点按 URL 去重后入队；visited 只在真正处理时标记。
+        // 旧实现把 filter 的副作用结果直接当队列，导致所有 URL 一开始就进了 visited，
+        // 后面每个都被「已访问」跳过，并发抓取永远返回空 → 白白回退到 WebView 逐页慢爬。
+        val queued = mutableSetOf<String>()
+        val queue = ArrayDeque<String>()
+        for (u in urls) if (queued.add(u)) queue.addLast(u)
         var guard = 0
         while (queue.isNotEmpty() && guard < 60) {
             val batch = mutableListOf<String>()
@@ -2217,7 +2758,10 @@ class UrlLoader(private val context: Context) {
                 collected.addAll(res.first)
                 for (np in res.second) {
                     val n = np.substringBefore('#')
-                    if (n !in visited) queue.addLast(n)
+                    if (n !in visited && n !in queued) {
+                        queued.add(n)
+                        queue.addLast(n)
+                    }
                 }
             }
         }
@@ -2302,6 +2846,8 @@ class UrlLoader(private val context: Context) {
      */
     private fun tocHasBigGaps(items: List<ChapterItem>): Boolean {
         if (items.size < 200) return false
+        // 重号的书（多卷各自编号）本来就不连续，用章节号判断完整性没有意义
+        if (hasDuplicateNumbering(items)) return false
         var min = Long.MAX_VALUE
         var max = Long.MIN_VALUE
         var counted = 0
@@ -2328,18 +2874,44 @@ class UrlLoader(private val context: Context) {
      * 2. 章节号在比较器里现算会退化成 O(n log n) 次正则匹配，几千章要几十毫秒；
      *    这里先算一遍 key 再排，只花 O(n)。
      */
+    /**
+     * 章节号是否大量重复（多卷各自从第 1 章编号 / 作者重号）。
+     *
+     * 这类目录**绝对不能**按章节号排序：两卷各有一个「第29章」，按号排会把
+     * 第一卷的 29 和第二卷的 29 挨在一起，整本书的阅读顺序就被打乱了
+     * （目录看起来就是「很多相同章节号、名字却不一样」，翻下一章也跟着串）。
+     */
+    private fun hasDuplicateNumbering(items: List<ChapterItem>): Boolean {
+        if (items.size < 40) return false
+        var numbered = 0
+        var dup = 0
+        val seen = HashSet<Long>(items.size * 2)
+        for (item in items) {
+            val n = chapterNumber(item.title) ?: continue
+            numbered++
+            if (!seen.add(n)) dup++
+        }
+        if (numbered < items.size / 2) return false
+        // 阈值 2%：实测正常书（垂钓之神 2428 个有号章节）重号率是 0，
+        // 只要出现成规模的重号就说明这本书不能按章节号排序了
+        return dup * 100 / numbered >= 2
+    }
+
     private fun sortChapterItems(items: List<ChapterItem>): List<ChapterItem> {
         if (items.size < 2) return items
         var numbered = 0
-        val keyed = ArrayList<Triple<Long, Int, ChapterItem>>(items.size)
-        for (i in items.indices) {
-            val item = items[i]
+        val keyed = ArrayList<Triple<Long, Long, ChapterItem>>(items.size)
+        for (item in items) {
             val n = chapterNumber(item.title)
             if (n != null) numbered++
-            keyed.add(Triple(n ?: urlNumber(item.url) ?: Long.MAX_VALUE, i, item))
+            keyed.add(Triple(n ?: Long.MAX_VALUE, urlNumber(item.url) ?: Long.MAX_VALUE, item))
         }
         // 章节号缺失过半时保持页面原始顺序，避免把没有编号的目录排乱
         if (numbered < items.size / 2) return items
+        // 重号太多 → 保持站点目录页的原始顺序（那才是真实阅读顺序）
+        if (hasDuplicateNumbering(items)) return items
+        // 同号章节再用 URL 里的数字（章节 id，通常随发布顺序递增）做次序，
+        // 少数偶发重号也能排到正确的前后关系
         keyed.sortWith(compareBy({ it.first }, { it.second }))
         return keyed.map { it.third }
     }
@@ -2583,6 +3155,57 @@ class UrlLoader(private val context: Context) {
         return res
     }
 
+    // ---- 章内分页「向前补齐」：防止从中间页进入时丢掉本章开头 ----
+
+    /** 「上一页」型分页链接的文字特征（页级词；「上一章」是章级导航，绝不能混入） */
+    private val prevPageTextRe = Regex(
+        "上一页|上一頁|上页|上頁|prev page|prevpage|previous page",
+        RegexOption.IGNORE_CASE
+    )
+
+    /** 收集页面上所有「上一页」型分页候选（已解析成绝对地址、去重、不含自身）。 */
+    private fun findPrevPageLinks(doc: org.jsoup.nodes.Document, baseUrl: String): List<String> {
+        val res = mutableListOf<String>()
+        val self = normPageKey(baseUrl)
+        for (a in doc.select("a")) {
+            val lt = navNorm(a.text() + " " + (a.attr("title") ?: ""))
+            if (!prevPageTextRe.containsMatchIn(lt)) continue
+            val href = a.attr("href")
+            if (href.isEmpty() || href.lowercase().startsWith("javascript:")) continue
+            val abs = try {
+                java.net.URL(java.net.URL(baseUrl), href).toString()
+            } catch (_: Exception) {
+                continue
+            }
+            if (normPageKey(abs) != self && res.none { normPageKey(it) == normPageKey(abs) }) res.add(abs)
+        }
+        return res
+    }
+
+    /**
+     * 从「上一页」候选里挑出本章更前面的那一页。
+     *
+     * 三重限定缺一不可（防止把「上一章」当「上一页」倒着爬穿整本书）：
+     *  1. 候选必须来自「上一页」文字匹配（[findPrevPageLinks]/JS 的 pprevs 已保证）；
+     *  2. 链接基名与当前章相同（章内分页，不是跨章）；
+     *  3. 页码比当前页小（倒推，不是循环）。
+     */
+    private fun pickPrevPageLink(
+        candidates: List<String>,
+        currentUrl: String,
+        base: String,
+        visited: Set<String>
+    ): String? {
+        val curIdx = pageIndex(currentUrl) ?: 1
+        return candidates.firstOrNull { c ->
+            c.isNotBlank() &&
+                chapterBase(c) == base &&
+                (pageIndex(c) ?: 1) < curIdx &&
+                normPageKey(c) != normPageKey(currentUrl) &&
+                normPageKey(c) !in visited
+        }
+    }
+
     private fun isCloudflareChallenge(doc: org.jsoup.nodes.Document): Boolean {
         val dt = (doc.title() ?: "").lowercase()
         val bd = (doc.body()?.text() ?: "").lowercase()
@@ -2597,6 +3220,17 @@ class UrlLoader(private val context: Context) {
         // 站点标题有两种常见排布：「书名-章节名-站点名」和「章节名-书名-站点名」。
         // 取第一个不含「第x章」的片段当书名；全都像章节名时退回倒数第二段（旧行为）。
         // 旧实现固定取倒数第二段，遇到三段式就会把「第17章 喝吐了」当书名写进历史/书架。
+        // 「书名 第38章 章节名」挤在同一段里（如 sudugu 的
+        // 「天人图谱 第三十八章 回校（2 / 2）-误道者小说-…」）：把章节名切掉，剩下的才是书名。
+        // 不处理的话会把作者名「误道者小说」当成书名写进书架和历史。
+        val headPart = parts.first()
+        Regex("""第\s*[0-9〇零一二三四五六七八九十百千万两]+\s*[章回卷篇节部集话]""")
+            .find(headPart)?.let { m ->
+                if (m.range.first > 0) {
+                    val t = headPart.substring(0, m.range.first).trim().trim('《', '》', '-', '—', ':', '：')
+                    if (t.isNotBlank()) return stripBookNameBrackets(t)
+                }
+            }
         val book = parts.firstOrNull { !lightChapterTitleRe.containsMatchIn(it) }
         val cand = (book ?: parts[parts.size - 2]).trim()
         return if (cand.isNotBlank()) stripBookNameBrackets(cand) else null
@@ -2663,6 +3297,16 @@ class UrlLoader(private val context: Context) {
     // ---- 正文收尾清洗（抓取通道与 WebView 通道共用） ----
     // 章内分页残留的页码标记：「(第1/3页)」「（第 2/3 页）」
     private val pageMarkerRe = Regex("[（(]\\s*第\\s*\\d+\\s*[/／]\\s*\\d+\\s*页\\s*[）)]")
+    // 标题结尾的章内页码标记：「隆德食品(2)」「回校（1 / 2）」「（第2/3页）」。
+    // 只剥标题结尾的纯数字/数字对括号 —— 「（二合一章节）」这类文字性括号不受影响。
+    private val titlePageMarkerRe = Regex(
+        "\\s*[（(]\\s*(?:第\\s*\\d+\\s*[/／]\\s*\\d+\\s*页?|\\d+\\s*[/／]\\s*\\d+|\\d+)\\s*[）)]\\s*$"
+    )
+
+    /** 剥掉标题结尾的章内页码标记（「(2)」「（1 / 2）」），显示时不再把分部当标题的一部分。 */
+    private fun stripTitlePageMarker(title: String): String =
+        titlePageMarkerRe.replace(title, "").trim()
+
     // 纯导航/工具栏行（比较前先经 navNorm：「下—章」→「下一章」、「返 回 目 录」→「返回目录」）
     private val NAV_ONLY_LINES = setOf(
         "上一章", "下一章", "上一页", "下一页", "上页", "下页", "上一节", "下一节", "上一節", "下一節",

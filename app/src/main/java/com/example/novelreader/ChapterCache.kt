@@ -11,7 +11,16 @@ data class CachedChapter(
     val content: String,
     val nextChapterUrl: String?,
     // 章节页上解析出的「上一章」链接。旧缓存文件里没有这个字段，读出来是 null，兼容。
-    val prevChapterUrl: String? = null
+    val prevChapterUrl: String? = null,
+    /**
+     * 正文是否抓全。
+     *
+     * 章内分页（第1/3页、第2/3页…）如果只抓到前两页（页码翻到一半超时、某页被反爬拦了），
+     * 正文就会少一页。这种「残章」**绝不能落盘** —— 一旦写进磁盘缓存，之后每次读都是
+     * 这份缺页的正文，用户只会觉得"这章怎么短了一截"，而且再也不会重新请求。
+     * 所以残章只在内存里给当前这次阅读用，不持久化；下次重新抓全的版本。
+     */
+    val complete: Boolean = true
 )
 
 /**
@@ -62,6 +71,8 @@ class ChapterCache(private val context: Context, private val bookKey: String) {
             if (chapter.prevChapterUrl != null) {
                 put("prevChapterUrl", chapter.prevChapterUrl)
             }
+            // 只存完整的章节；万一有残章到这里，也要把标记写进去，读的时候能识别
+            put("complete", chapter.complete)
             put("url", url)
         }
         chapterFile(url).writeText(json.toString())
@@ -77,7 +88,8 @@ class ChapterCache(private val context: Context, private val bookKey: String) {
                 title = json.getString("title"),
                 content = json.getString("content"),
                 nextChapterUrl = json.optString("nextChapterUrl", "").takeIf { it.isNotBlank() },
-                prevChapterUrl = json.optString("prevChapterUrl", "").takeIf { it.isNotBlank() }
+                prevChapterUrl = json.optString("prevChapterUrl", "").takeIf { it.isNotBlank() },
+                complete = json.optBoolean("complete", true)
             )
         } catch (_: Exception) {
             // 损坏缓存：删除并忽略

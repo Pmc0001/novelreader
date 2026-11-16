@@ -25,7 +25,7 @@ object TocStore {
 
     // V2：meta 行新增「断点续抓」字段；同时让 V1 那种「只抓到首页却标成完整」的坏缓存
     // 自动失效（读到不认识的版本就当没有缓存，重新抓一次）。
-    private const val VERSION = "V6"
+    private const val VERSION = "V7"
     private const val DIR_NAME = "toc_cache"
     private const val MAX_BOOKS = 40
     private const val MAX_ITEMS = 20_000
@@ -138,6 +138,18 @@ object TocStore {
     fun clearAll(context: Context) {
         memory.clear()
         runCatching { File(context.filesDir, DIR_NAME).deleteRecursively() }
+    }
+
+    /**
+     * 删除某本书的目录缓存（内存 + 磁盘）。
+     * 书被从书架/历史移除时调用，避免留下永远不会再读的孤儿目录缓存。
+     */
+    @Synchronized
+    fun remove(context: Context, url: String) {
+        val key = tocKeyOf(url)
+        if (key.isBlank()) return
+        memory.remove(key)
+        runCatching { fileFor(context, key).delete() }
     }
 
     // ===== 缓存键 =====

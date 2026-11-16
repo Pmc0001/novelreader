@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 左滑移除按钮底色：暖红，圆角与书卡(18dp)一致 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FFE15B4C" />
+    <corners android:radius="18dp" />
+</shape>

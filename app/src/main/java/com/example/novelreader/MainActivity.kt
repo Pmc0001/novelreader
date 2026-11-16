@@ -26,6 +26,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import android.text.TextUtils
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import com.example.novelreader.HistoryStore
 
@@ -46,8 +47,22 @@ class MainActivity : AppCompatActivity() {
 
         prefs = getPreferences(MODE_PRIVATE)
 
+        // 一次性清理旧版章节缓存：旧版本会把「章内分页没抓全」的残章当成完整正文落盘，
+        // 于是那些章永远缺最后一页。这里按 schema 版本清一次，让它们重新抓全。
+        purgeLegacyChapterCache()
+
         setupUI()
         handleIncomingOpenIntent(intent)
+    }
+
+    private fun purgeLegacyChapterCache() {
+        val meta = getSharedPreferences("app_meta", MODE_PRIVATE)
+        val schema = meta.getInt(KEY_CHAPTER_CACHE_SCHEMA, 1)
+        if (schema >= CHAPTER_CACHE_SCHEMA) return
+        meta.edit().putInt(KEY_CHAPTER_CACHE_SCHEMA, CHAPTER_CACHE_SCHEMA).apply()
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { ChapterCache.clearAll(applicationContext) }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -536,7 +551,12 @@ class MainActivity : AppCompatActivity() {
                 typeface = Typeface.DEFAULT_BOLD
                 setPadding((16 * density).toInt(), 0, 0, 0)
             }
-            historyContainer.addView(makeBookRow(item, rowSubtitle(item), arrow) { openBook(item) })
+            val row = makeBookRow(item, rowSubtitle(item), arrow) { openBook(item) }
+            // 左滑移除：从阅读历史中删掉这条记录
+            historyContainer.addView(makeSwipeableRow(row) {
+                removeBookEntry(item) { it.remove(item.url) }
+                refreshList()
+            })
         }
 
         val clearBtn = TextView(this@MainActivity).apply {
@@ -591,11 +611,16 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(ContextCompat.getColor(this@MainActivity, R.color.textSecondary))
                 setPadding((16 * density).toInt(), 0, 0, 0)
                 setOnClickListener {
-                    HistoryStore(this@MainActivity).removeFromShelf(item.bookKey)
+                    removeBookEntry(item) { it.removeFromShelf(item.bookKey) }
                     refreshList()
                 }
             }
-            historyContainer.addView(makeBookRow(item, rowSubtitle(item), remove) { openBook(item) })
+            val row = makeBookRow(item, rowSubtitle(item), remove) { openBook(item) }
+            // 左滑移除：把这本书移出书架
+            historyContainer.addView(makeSwipeableRow(row) {
+                removeBookEntry(item) { it.removeFromShelf(item.bookKey) }
+                refreshList()
+            })
         }
 
         val clearBtn = TextView(this@MainActivity).apply {
@@ -725,14 +750,12 @@ class MainActivity : AppCompatActivity() {
         val density = resources.displayMetrics.density
         val row = LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.HORIZONTAL
+            // 水平/底部边距由外层 makeSwipeableRow 的左滑包裹层承担，
+            // 保证移除按钮与卡片边缘完全对齐
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                marginStart = (20 * density).toInt()
-                marginEnd = (20 * density).toInt()
-                bottomMargin = (12 * density).toInt()
-            }
+            )
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_card_v2)
             elevation = 2 * density
             setPadding((14 * density).toInt(), (12 * density).toInt(), (16 * density).toInt(), (12 * density).toInt())
@@ -857,6 +880,58 @@ class MainActivity : AppCompatActivity() {
         row.addView(trailing)
         row.setOnClickListener { onRowClick() }
         return row
+    }
+
+    /**
+     * 从书架或历史移除一本书，并**无条件**连带清掉它的离线缓存
+     * （章节缓存 + 目录缓存），不留孤儿缓存。
+     *
+     * 用户预期是「移除 = 这本书的痕迹全删」：即使书还留在另一个列表里
+     * （比如仅从历史移除、书架还在），缓存也一并清掉 —— 缓存只是加速层，
+     * 下次打开会自动重新抓取，代价可以忽略。
+     */
+    private fun removeBookEntry(item: HistoryItem, remove: (HistoryStore) -> Unit) {
+        val store = HistoryStore(this)
+        remove(store)
+        val url = item.url
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching {
+                // 缓存目录 key 与阅读页一致：keyOf(章节URL)（旧数据的 bookKey 可能是章节级，兜底一起清）
+                val keys = linkedSetOf(
+                    HistoryItem.keyOf(url),
+                    HistoryItem.canonicalKey(url, item.bookKey),
+                    item.bookKey
+                )
+                for (k in keys) {
+                    if (k.isNotBlank() && k != "initial") ChapterCache(this@MainActivity, k).clear()
+                }
+                // 目录缓存的 key 由「首次保存目录时所用的 URL」推导，
+                // 章节 URL / 书页 URL 两种形态都试一遍，确保命中
+                TocStore.remove(this@MainActivity, url)
+                TocStore.remove(this@MainActivity, item.bookKey)
+            }
+        }
+    }
+
+    /**
+     * 给书行包一层"左滑移除"容器：
+     * 左滑露出红色移除按钮，点击按钮后整行滑出并回调 [onSwipeRemove]
+     * （书架 → 移出书架；阅读历史 → 删除该条记录），随后刷新列表。
+     */
+    private fun makeSwipeableRow(row: View, onSwipeRemove: () -> Unit): SwipeRemoveLayout {
+        val density = resources.displayMetrics.density
+        return SwipeRemoveLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginStart = (20 * density).toInt()
+                marginEnd = (20 * density).toInt()
+                bottomMargin = (12 * density).toInt()
+            }
+            onRemove = onSwipeRemove
+            setContentView(row)
+        }
     }
 
     /**
@@ -1121,5 +1196,9 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val KEY_LAST_CLIP_PROMPT = "last_clip_prompt"
+        // 章节缓存的 schema 版本：版本变了就把旧的章节缓存清一次
+        // （2 = 开始区分"完整章 / 残章"，之前的缓存可能缺页，需要重抓）
+        private const val KEY_CHAPTER_CACHE_SCHEMA = "chapter_cache_schema"
+        private const val CHAPTER_CACHE_SCHEMA = 4
     }
 }

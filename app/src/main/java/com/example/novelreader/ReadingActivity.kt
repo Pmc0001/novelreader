@@ -145,6 +145,9 @@ class ReadingActivity : AppCompatActivity() {
     private var tocLastErrorAt = 0L
     // 当前目录列表里是否成功定位到了「正在读的这一章」（用于全量目录补齐后决定要不要重新定位）
     private var tocCurrentFound = false
+    // 当前章正文是否残缺（章内分页没抓全）：true 时"下一章"要保留站点给的分页链接，
+    // 让用户至少能读到剩下那半章；false 时就按目录的下一章走（分页链接指向的正是已合并的内容）
+    private var currentChapterPartial = false
     // 当前章在目录中的下标（-1 表示没定位到）；「全部」模式据此决定首批要渲染到哪
     private var tocCurrentIndex = -1
     private var tocCurrentPage = 0
@@ -334,14 +337,21 @@ class ReadingActivity : AppCompatActivity() {
             currentUrl = bookUrl
             openBook(bookUrl, bookTitle)
         } else if (title != null && content != null) {
+            // 搜索页「在阅读页打开当前页」的快通道：正文已在搜索页提取好，零网络直接上屏
             currentChapterTitle = title
             currentBookTitle = intent.getStringExtra("EXTRA_BOOK_TITLE_FALLBACK") ?: currentBookTitle
             val cacheUrl = currentUrl ?: "initial"
-            val cached = CachedChapter(title, content, nextChapterUrl)
+            // 搜索页直提时顺带拿到的「上一章」：目录还没爬完，回翻按钮也能用
+            val cached = CachedChapter(
+                title, content, nextChapterUrl,
+                intent.getStringExtra("EXTRA_PREV_CHAPTER")?.takeIf { it.isNotBlank() }
+            )
             storeCachedChapter(cacheUrl, cached)
             applyChapter(cached, cacheUrl)
             restorePosition()
             schedulePrefetch(cacheUrl, nextChapterUrl)
+            // 这本书上次读过的话，目录先从磁盘画出来（抽屉/上一章立刻可用），过期再后台补全
+            restoreTocFromCache(currentUrl)
             prefetchToc()
             tvTitle.text = currentChapterTitle
         } else if (url != null) {
@@ -458,7 +468,7 @@ class ReadingActivity : AppCompatActivity() {
                 prevChapters.clear()
                 currentUrl = firstUrl
                 nextChapterUrl = chap.nextChapterUrl
-                val cached = CachedChapter(chap.title, chap.content, chap.nextChapterUrl, chap.prevChapterUrl)
+                val cached = CachedChapter(chap.title, chap.content, chap.nextChapterUrl, chap.prevChapterUrl, chap.complete)
                 storeCachedChapter(firstUrl, cached)
                 applyChapter(cached, firstUrl)
                 schedulePrefetch(firstUrl, chap.nextChapterUrl)
@@ -1507,8 +1517,14 @@ class ReadingActivity : AppCompatActivity() {
             }
             return
         }
-        // 回上一章：优先用回翻栈；栈空（例如直接从目录/历史跳到本章）就用目录里的前一章
-        val fromStack = prevChapters.removeLastOrNull()
+        // 回上一章：优先用回翻栈；栈空（例如直接从目录/历史跳到本章）就用目录里的前一章。
+        // 栈里可能有「书的目录页」——第一章页脚的「上一章」就指向它（如 /1543/）。
+        // 那不是章节，翻过去只会把整页章节名当成正文，直接丢弃。
+        var fromStack = prevChapters.removeLastOrNull()
+        while (fromStack != null && UrlLoader.isBookRootLink(fromStack, currentUrl ?: "")) {
+            addPerf("drop-catalog-prev  $fromStack")
+            fromStack = prevChapters.removeLastOrNull()
+        }
         val url = fromStack ?: tocPrevUrl() ?: run {
             Toast.makeText(this, "已经是第一章", Toast.LENGTH_SHORT).show()
             return
@@ -1592,7 +1608,7 @@ class ReadingActivity : AppCompatActivity() {
                     logChapterLoad("network", url, startedAt)
                     applyFetchedChapter(
                         url,
-                        CachedChapter(result.title, result.content, result.nextChapterUrl, result.prevChapterUrl),
+                        CachedChapter(result.title, result.content, result.nextChapterUrl, result.prevChapterUrl, result.complete),
                         isForward,
                         restoreSavedPosition
                     )
@@ -1603,6 +1619,17 @@ class ReadingActivity : AppCompatActivity() {
                     // 若本次加载是由翻章动画触发的（chapterSwapPending 已置位），
                     // 加载失败需回退到当前章画面，避免停在空白/末页快照。
                     readingView.abortChapterSwap()
+                    // 续读落点是一页目录（旧版本把「第一章→上一章→书目录」当成章节存过历史）：
+                    // 别把用户丢在空白页，直接把目录打开让他挑一章继续。
+                    if (restoreSavedPosition && result.message.contains("目录")) {
+                        Toast.makeText(
+                            this@ReadingActivity,
+                            "上次的阅读位置是一页目录，已为你打开目录",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        openToc()
+                        return@launch
+                    }
                     Toast.makeText(this@ReadingActivity, result.message, Toast.LENGTH_LONG).show()
                 }
             }
@@ -1625,21 +1652,30 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     private fun applyChapter(cached: CachedChapter, url: String, isForward: Boolean = true) {
+        currentChapterPartial = !cached.complete
         currentChapterTitle = cached.title
         currentUrl = url
         nextChapterUrl = cached.nextChapterUrl
         // 章节页自身带「上一章」链接时先补进回翻栈：从目录/历史直接跳到本章时栈是空的，
         // 只靠目录兜底的话，目录一旦没加载出来就永远回不到上一章。
-        cached.prevChapterUrl?.takeIf { it.isNotBlank() }?.let { prev ->
-            if (prevChapters.none { chapterKey(it) == chapterKey(prev) }) {
-                prevChapters.addLast(prev)
-            }
-        }
+        cached.prevChapterUrl?.takeIf { prev ->
+            prev.isNotBlank() &&
+                // 目录页不是章节：第一章的「上一章」会指到 /1543/ 这种书目录，不能进回翻栈
+                !UrlLoader.isBookRootLink(prev, url) &&
+                prevChapters.none { chapterKey(it) == chapterKey(prev) }
+        }?.let { prevChapters.addLast(it) }
         // 下一章从第一页开始；上一章回到最后一页。
         // 用 onLayoutReady 在折行排版（relayout）完成后定位，确保 totalPages 已算好，定位精确；
         // 不依赖异步的 pendingStartAtEnd 竞态，避免翻回上一章时落点回到首行。
         readingView.onLayoutReady = if (isForward) null else ({ readingView.goToLastPage() })
-        readingView.setContent(cached.content)
+        // 残章兜底提示：章内分页没抓全时（超时/被拦），正文末尾会少一页。
+        // 明确告诉用户「翻走再回来可重新加载」，否则只会觉得这章莫名其妙断在半句话上。
+        val bodyText = if (cached.complete) cached.content else buildString {
+            append(cached.content)
+            append("\n\n——————")
+            append("\n（本章分页较多，有 1 页没加载出来。翻到下一章再回来，会自动重新加载完整正文。）")
+        }
+        readingView.setContent(bodyText)
         if (isForward) readingView.setPage(0)
         tvTitle.text = currentChapterTitle
         updateNextFromToc(url)
@@ -1674,6 +1710,22 @@ class ReadingActivity : AppCompatActivity() {
         return if (idx > 0) chapterToc[idx - 1].url else null
     }
 
+    /**
+     * 判断 [next] 是不是 [current] 这一章的「下一页」。
+     *
+     * 有些站把章内分页做成了独立 URL（`/1543/1283728.html` 与 `/1543/1283728_2.html`），
+     * 章节页上的「下一章」就指向这个 `_2`。这时**绝不能**用目录的下一项去覆盖它 ——
+     * 目录里只有主章节一条，覆盖就等于把这半章跳过去了（用户看到的就是"少了一截"）。
+     */
+    private fun isSameChapterNextPage(current: String, next: String): Boolean {
+        fun base(u: String): String {
+            val seg = u.substringBefore('#').substringBefore('?').trimEnd('/').substringAfterLast('/')
+            return seg.substringBefore('.').substringBefore('_').replace(Regex("""-\d+$"""), "")
+        }
+        val b = base(current)
+        return b.isNotEmpty() && b == base(next)
+    }
+
     private fun updateNextFromToc(url: String) {
         val idx = tocIndexOf(url)
         if (idx in 0 until chapterToc.size - 1) {
@@ -1681,7 +1733,13 @@ class ReadingActivity : AppCompatActivity() {
             // 目录缺章（站点分页没抓全、标题被过滤）时，目录里的"下一项"可能直接跳到
             // 后面好几章 —— 用户点下一章就跳章（如 314 直接到 317）。
             // 章节页上的「下一章」链接永远是相邻的一章，优先级更高。
-            if (tocComplete || nextChapterUrl.isNullOrBlank()) {
+            val pageNext = nextChapterUrl
+            if (currentChapterPartial && pageNext != null && isSameChapterNextPage(url, pageNext)) {
+                // 本章正文残缺、而站点给的"下一章"正好是本章下一页 → 保留它，
+                // 否则用户永远读不到剩下那半章。（正文完整时不需要，分页已合并）
+                return
+            }
+            if (tocComplete || pageNext.isNullOrBlank()) {
                 nextChapterUrl = chapterToc[idx + 1].url
             }
         }
@@ -1873,7 +1931,7 @@ class ReadingActivity : AppCompatActivity() {
         // 预取等于晚启动十几秒，用户翻章时自然还没就位。
         val light = if (UrlLoader.isWebViewOnly(target)) null else try {
             when (val r = loader.fetchChapterLight(target, PREFETCH_LIGHT_BUDGET_MS)) {
-                is UrlLoader.LoadResult.Success -> CachedChapter(r.title, r.content, r.nextChapterUrl, r.prevChapterUrl)
+                is UrlLoader.LoadResult.Success -> CachedChapter(r.title, r.content, r.nextChapterUrl, r.prevChapterUrl, r.complete)
                 else -> null
             }
         } catch (e: TimeoutCancellationException) {
@@ -1893,7 +1951,7 @@ class ReadingActivity : AppCompatActivity() {
         // 轻量过不去 → 后台 WebView 预渲染（页面是对用户不可见的，不会闪白块）
         return try {
             when (val r = loader.loadUrl(target, skipLight = true)) {
-                is UrlLoader.LoadResult.Success -> CachedChapter(r.title, r.content, r.nextChapterUrl, r.prevChapterUrl)
+                is UrlLoader.LoadResult.Success -> CachedChapter(r.title, r.content, r.nextChapterUrl, r.prevChapterUrl, r.complete)
                 else -> null
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1915,7 +1973,10 @@ class ReadingActivity : AppCompatActivity() {
      * @return true 表示这份缓存是坏的、已经清理，调用方应继续走网络
      */
     private fun dropIfBrokenCache(url: String, cached: CachedChapter): Boolean {
-        if (!UrlLoader.looksLikeErrorPage(cached.content, cached.title)) return false
+        // 错误页 / 目录页都不能当正文用：目录页是旧版本误把「上一章→书目录」抓进来的产物，
+        // 一旦命中就会一直显示整页章节名，所以这里和错误页一样直接丢弃并重抓。
+        val catalog = UrlLoader.looksLikeCatalogPage(cached.content, cached.title)
+        if (!catalog && !UrlLoader.looksLikeErrorPage(cached.content, cached.title)) return false
         val key = chapterKey(url)
         chapterCache.remove(key)
         persistedUrls.remove(key)
@@ -1933,6 +1994,20 @@ class ReadingActivity : AppCompatActivity() {
         // 错误页绝不入库：一旦写进去，这一章就再也不会重新请求了
         if (UrlLoader.looksLikeErrorPage(cached.content, cached.title)) {
             addPerf("reject-broken  $key")
+            return
+        }
+        // 目录页同样绝不入库（第一章的「上一章」指向书目录时会出现这种"章"）
+        if (UrlLoader.looksLikeCatalogPage(cached.content, cached.title)) {
+            addPerf("reject-catalog  $key")
+            return
+        }
+        // 残章（章内分页没抓全）只在内存里给这次阅读用，**不落盘**：
+        // 一旦存进磁盘，这一章就永远是缺页的版本了，下次也不会重新请求。
+        // 内存里留着是为了让用户当场能读，翻走再回来会重新抓一次完整版。
+        if (!cached.complete) {
+            // 也不进内存缓存：正文已经直接交给页面显示（applyChapter 用的是这个对象），
+            // 缓存里不留残章，翻走再翻回来才会重新抓一次完整版。
+            addPerf("partial $key(${cached.content.length})")
             return
         }
         chapterCache[key] = cached
@@ -2085,8 +2160,14 @@ class ReadingActivity : AppCompatActivity() {
             val last = minOf(idx + PREFETCH_AHEAD, chapterToc.size - 1)
             for (i in idx + 1..last) targets.add(chapterToc[i].url)
             // 目录里的「下一章」比章节页角落的链接更可靠，顺手对齐 ——
-            // 但目录还没抓全时不能对齐（缺章会导致跳章），只做预取
-            if (idx < chapterToc.size - 1 && tocComplete) nextChapterUrl = chapterToc[idx + 1].url
+            // 但目录还没抓全时不能对齐（缺章会导致跳章），只做预取；
+            // 「下一章」若是本章下一页（章内分页），也不能对齐（等于跳过半章）
+            val pageNext = nextChapterUrl
+            val nextIsPage = currentChapterPartial && pageNext != null &&
+                isSameChapterNextPage(fromUrl, pageNext)
+            if (idx < chapterToc.size - 1 && tocComplete && !nextIsPage) {
+                nextChapterUrl = chapterToc[idx + 1].url
+            }
         } else if (!nextUrl.isNullOrBlank()) {
             targets.add(nextUrl)
         }
@@ -2266,7 +2347,7 @@ class ReadingActivity : AppCompatActivity() {
                             persistedUrls.clear()
                             prefetchRequested.clear()
                             prefetchChainJob?.cancel()
-                            val cached = CachedChapter(result.title, result.content, result.nextChapterUrl, result.prevChapterUrl)
+                            val cached = CachedChapter(result.title, result.content, result.nextChapterUrl, result.prevChapterUrl, result.complete)
                             storeCachedChapter(url, cached)
                             applyChapter(cached, url)
                             schedulePrefetch(url, result.nextChapterUrl)
@@ -2671,7 +2752,7 @@ class ReadingActivity : AppCompatActivity() {
         // 然后再走一遍更慢的 WebView —— 那是净亏（一次 6s 变 5s+3s）。
         private const val FOREGROUND_LIGHT_BUDGET_MS = 15_000L
         // 后台预取的轻量通道预算：慢一点无妨，成功一次就省掉后面所有等待
-        private const val PREFETCH_LIGHT_BUDGET_MS = 12_000L
+        private const val PREFETCH_LIGHT_BUDGET_MS = 20_000L
         // 翻章时最多陪在飞预取等这么久。不能长 —— 等不到就自己发，让用户先看到内容。
         private const val PREFETCH_WAIT_MS = 1_000L
         // WebView 预取：正在跑时前台不再等它（直接接管），避免被后台任务拖住

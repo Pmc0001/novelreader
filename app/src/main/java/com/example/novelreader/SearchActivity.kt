@@ -45,15 +45,20 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
+import androidx.lifecycle.lifecycleScope
 import java.net.URLDecoder
 import java.net.URLEncoder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 
 /**
  * 搜索页（原生 UI）：
  * - 顶栏为原生搜索输入胶囊，键盘搜索键直接出结果，搜索引擎固定为必应；
  * - 未搜索时展示原生首页面板：品牌引导、最近搜索（长按删除）、常用网站快捷入口；
- * - 菜单提供「在阅读页打开当前页」：取当前 WebView URL 交给 ReadingActivity 解析目录并阅读；
+ * - 菜单提供「在阅读页打开当前页」：把 WebView 当前页直接复用给 ReadingActivity
+ *   （章节页零网络直出正文；书页/目录页把 HTML 直传过去，解析目录不再重新下载这一页）；
  * - 支持网页内文件下载（TXT/EPUB 等直链）：交给系统下载管理器存到"下载/NovelReader"。
  *
  * 跳转管控（见 NavigationGuard）：小说站普遍存在脚本自动跳转、302 跳转链、弹窗、
@@ -552,8 +557,16 @@ class SearchActivity : AppCompatActivity() {
     }
 
     /**
-     * 菜单核心功能：将 WebView 当前页面跳转到阅读页。
-     * 取当前 URL（及页面标题）交给 ReadingActivity 作为书籍主页 URL 解析目录、加载首章。
+     * 菜单核心功能：把 WebView 当前页面交给阅读页。
+     *
+     * 秒开原理：页面在搜索 WebView 里**已经渲染好了**，旧做法只把 URL 传过去、让
+     * 阅读页把同一 URL 重新下载解析一遍（1~3 个串行往返，反爬站还要退 WebView 等十几秒）。
+     * 这里先把整页 HTML 一次性读出来（零网络），然后分两条路：
+     *  - 是章节页（能过与联网通道同一套的正文判别）→ 正文 + 上/下一章链接直传，
+     *    阅读页拿到即渲染，点下去到出字只差 Activity 启动；
+     *  - 是书页/目录页/搜索结果页 → 仍传 URL 走原来的解析流程，但 HTML 已按 URL 直传，
+     *    阅读页解析目录首页时用它，省掉「重新下载刚看过的这一页」那一次往返。
+     * 任何一步拿不到（读页失败、页面太大）都退回旧路径，只会慢不会坏。
      */
     private fun openCurrentInReader() {
         val url = webView.url
@@ -562,11 +575,44 @@ class SearchActivity : AppCompatActivity() {
             return
         }
         val title = webView.title?.takeIf { it.isNotBlank() } ?: currentQuery ?: ""
-        val intent = Intent(this, ReadingActivity::class.java).apply {
+        // 必须在主线程读页（WebView 约束）；读完把重活（Jsoup 解析）挪到后台线程
+        UrlLoader.captureLoadedHtml(webView) { html ->
+            if (isFinishing || isDestroyed) return@captureLoadedHtml
+            if (html.isNullOrBlank()) {
+                openByBookUrl(url, title)
+                return@captureLoadedHtml
+            }
+            // 先直传给阅读页：它解析目录首页时按同 URL 取一次即弃（取不到就照常联网）
+            UrlLoader.putLoadedHtml(url, html)
+            lifecycleScope.launch {
+                val chapter = withContext(Dispatchers.Default) {
+                    UrlLoader(this@SearchActivity).extractChapterFromLoadedHtml(html, url)
+                }
+                if (isFinishing || isDestroyed) return@launch
+                if (chapter is UrlLoader.LoadResult.Success) {
+                    // 章节页：正文已在手上，阅读页零请求直出
+                    startActivity(Intent(this@SearchActivity, ReadingActivity::class.java).apply {
+                        putExtra("EXTRA_URL", url)
+                        putExtra("EXTRA_TITLE", chapter.title)
+                        putExtra("EXTRA_CONTENT", chapter.content)
+                        putExtra("EXTRA_NEXT_CHAPTER", chapter.nextChapterUrl)
+                        putExtra("EXTRA_PREV_CHAPTER", chapter.prevChapterUrl)
+                        chapter.bookTitle?.let { putExtra("EXTRA_BOOK_TITLE_FALLBACK", it) }
+                    })
+                } else {
+                    // 书页/目录页：URL 照旧，HTML 已直传（目录首页解析不再重新下载这一页）
+                    openByBookUrl(url, title)
+                }
+            }
+        }
+    }
+
+    /** 旧路径：只把书页 URL 交给阅读页，由它自己爬目录、抓首章 */
+    private fun openByBookUrl(url: String, title: String) {
+        startActivity(Intent(this, ReadingActivity::class.java).apply {
             putExtra("EXTRA_BOOK_URL", url)
             putExtra("EXTRA_BOOK_TITLE", title)
-        }
-        startActivity(intent)
+        })
     }
 
     private fun copyCurrentUrl() {

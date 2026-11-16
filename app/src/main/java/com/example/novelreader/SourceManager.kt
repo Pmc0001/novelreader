@@ -19,7 +19,27 @@ object SourceManager {
     // 或改为 JS 渲染空壳，已替换为实测「服务端渲染、可被轻量通道解析」的端点）。
     // 这些盗版聚合站域名/搜索结构常变动，若某源无结果，请在「换源」面板添加自定义书源
     // （粘贴带 {q} 的搜索地址，搜索表单多为 action="/search/"、参数名 searchkey）。
+    //
+    // 2026-11-16 复核：前三个源现在会被站点「正在检查您的浏览器」拦截页挡住（轻量通道取不到结果），
+    // 实测可直连的两个源放在最前面：
+    //   sudugu   —— 搜索 /modules/article/search.php?searchkey={q}，命中唯一结果时直接 302 到书页；
+    //   kudushu  —— 搜索 /modules/article/search.php?q={q}（参数是 q 不是 searchkey），
+    //               正文在桌面页 #content 里整章直出，可补齐 sudugu 个别章节缺正文的开头部分。
     private val BUILTIN = listOf(
+        BookSource(
+            "sudugu", "速读谷(sudugu)",
+            listOf(
+                "https://www.sudugu.cc/modules/article/search.php?searchkey={q}"
+            ),
+            "utf-8", true
+        ),
+        BookSource(
+            "kudushu", "苦读书(kudushu)",
+            listOf(
+                "https://www.kudushu.org/modules/article/search.php?q={q}"
+            ),
+            "utf-8", true
+        ),
         BookSource(
             "sanqishuwu", "三七书屋(sanqishuwu)",
             listOf(
