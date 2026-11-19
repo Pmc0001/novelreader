@@ -64,6 +64,8 @@ class ReadingActivity : AppCompatActivity() {
     private lateinit var tocDrawer: View
     // 目录抽屉顶栏：跟随阅读页顶栏的动态栏色（applyBarTheme 统一上色）
     private lateinit var tocDrawerHeader: View
+    // 目录抽屉顶栏的挖孔/状态栏避让垫片（高度与 status_bar_spacer 同步）
+    private lateinit var tocStatusBarSpacer: View
     private lateinit var tocOverlay: View
     private lateinit var tocList: ViewGroup
     private lateinit var tocScrollView: android.widget.ScrollView
@@ -248,6 +250,7 @@ class ReadingActivity : AppCompatActivity() {
         premiumLoadingView = findViewById(R.id.premium_loading_view)
         tocDrawer = findViewById(R.id.toc_drawer)
         tocDrawerHeader = findViewById(R.id.toc_drawer_header)
+        tocStatusBarSpacer = findViewById(R.id.toc_status_bar_spacer)
         tocOverlay = findViewById(R.id.toc_overlay)
         tocList = findViewById(R.id.toc_list)
         tocScrollView = findViewById(R.id.toc_scroll_view)
@@ -303,6 +306,9 @@ class ReadingActivity : AppCompatActivity() {
             )
             statusBarSpacer.layoutParams.height = topInset
             statusBarSpacer.requestLayout()
+            // 目录抽屉顶栏同步避让挖孔/状态栏，避免头部文字被挖孔遮挡
+            tocStatusBarSpacer.layoutParams.height = topInset
+            tocStatusBarSpacer.requestLayout()
             navBarSpacer.layoutParams.height = bottomInset
             navBarSpacer.requestLayout()
             insets

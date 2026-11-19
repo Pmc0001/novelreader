@@ -282,42 +282,55 @@
         <LinearLayout
             android:id="@+id/toc_drawer_header"
             android:layout_width="match_parent"
-            android:layout_height="60dp"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:background="@color/colorPrimary"
-            android:paddingHorizontal="16dp">
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@color/colorPrimary">
 
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="目录"
-                android:textSize="18sp"
-                android:textStyle="bold"
-                android:textColor="@android:color/white" />
+            <!-- 挖孔/状态栏避让垫片：高度 = cutout/状态栏安全区（与阅读页顶栏 status_bar_spacer 同步），
+                 背景随顶栏动态上色，色带延伸至屏幕顶边、内容退到挖孔下方 -->
+            <View
+                android:id="@+id/toc_status_bar_spacer"
+                android:layout_width="match_parent"
+                android:layout_height="0dp" />
 
-            <TextView
-                android:id="@+id/toc_change_source"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="换源"
-                android:textSize="14sp"
-                android:textColor="@android:color/white"
-                android:alpha="0.9"
-                android:padding="8dp"
-                android:background="?attr/selectableItemBackgroundBorderless" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="60dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="16dp">
 
-            <TextView
-                android:id="@+id/toc_close"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="关闭"
-                android:textSize="14sp"
-                android:textColor="@android:color/white"
-                android:alpha="0.8"
-                android:padding="8dp"
-                android:background="?attr/selectableItemBackgroundBorderless" />
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="目录"
+                    android:textSize="18sp"
+                    android:textStyle="bold"
+                    android:textColor="@android:color/white" />
+
+                <TextView
+                    android:id="@+id/toc_change_source"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="换源"
+                    android:textSize="14sp"
+                    android:textColor="@android:color/white"
+                    android:alpha="0.9"
+                    android:padding="8dp"
+                    android:background="?attr/selectableItemBackgroundBorderless" />
+
+                <TextView
+                    android:id="@+id/toc_close"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="关闭"
+                    android:textSize="14sp"
+                    android:textColor="@android:color/white"
+                    android:alpha="0.8"
+                    android:padding="8dp"
+                    android:background="?attr/selectableItemBackgroundBorderless" />
+            </LinearLayout>
         </LinearLayout>
 
         <FrameLayout
